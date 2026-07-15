@@ -197,6 +197,10 @@
       border-radius: 8px;
       display: block;
     }
+    #mel {
+      height: 220px;
+      margin-top: 10px;
+    }
     .timeline-wrap {
       overflow: auto;
       border: 1px solid var(--line);
@@ -376,7 +380,7 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, activeIdx: -1, zoom: 18 };
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, mel: null, activeIdx: -1, zoom: 18 };
     const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
 
     function fmtSec(v) {
@@ -439,6 +443,7 @@
       renderItem();
       await loadWaveform();
       drawWaveform(0);
+      drawMelSpectrogram(0);
     }
     function renderItem() {
       const row = state.item, v = row._viewer || {}, stats = row.stats || {};
@@ -505,6 +510,7 @@
             </div>
             <div class="panel-body">
               <canvas id="wave" width="1600" height="220"></canvas>
+              <canvas id="mel" width="1600" height="320"></canvas>
               <div style="height:10px"></div>
               <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
             </div>
@@ -558,10 +564,12 @@
         updateActive(idx);
         updateCursor(audio.currentTime);
         drawWaveform(audio.currentTime);
+        drawMelSpectrogram(audio.currentTime);
       });
       audio.addEventListener('seeked', () => {
         updateCursor(audio.currentTime);
         drawWaveform(audio.currentTime);
+        drawMelSpectrogram(audio.currentTime);
       });
       $('prevChunk').onclick = () => seekChunk(Math.max(0, state.activeIdx - 1));
       $('nextChunk').onclick = () => seekChunk(Math.min((state.item.timeline || []).length - 1, state.activeIdx + 1));
@@ -602,6 +610,7 @@
     }
     async function loadWaveform() {
       state.audioBuffer = null;
+      state.mel = null;
       try {
         const res = await fetch(state.item._viewer.audio_url);
         const arr = await res.arrayBuffer();
@@ -647,6 +656,155 @@
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
     }
+    function hzToMel(hz) {
+      return 2595 * Math.log10(1 + hz / 700);
+    }
+    function melToHz(mel) {
+      return 700 * (Math.pow(10, mel / 2595) - 1);
+    }
+    function hann(n, size) {
+      return 0.5 - 0.5 * Math.cos(2 * Math.PI * n / (size - 1));
+    }
+    function dftPower(frame, bins) {
+      const out = new Float32Array(bins);
+      const n = frame.length;
+      for (let k = 0; k < bins; k++) {
+        let re = 0, im = 0;
+        const step = -2 * Math.PI * k / n;
+        for (let i = 0; i < n; i++) {
+          const angle = step * i;
+          re += frame[i] * Math.cos(angle);
+          im += frame[i] * Math.sin(angle);
+        }
+        out[k] = re * re + im * im;
+      }
+      return out;
+    }
+    function melFilters(sampleRate, fftSize, melBins, fftBins) {
+      const minMel = hzToMel(60);
+      const maxMel = hzToMel(Math.min(sampleRate / 2, 7600));
+      const points = [];
+      for (let i = 0; i < melBins + 2; i++) {
+        const mel = minMel + (maxMel - minMel) * i / (melBins + 1);
+        points.push(Math.floor((fftSize + 1) * melToHz(mel) / sampleRate));
+      }
+      const filters = [];
+      for (let m = 1; m <= melBins; m++) {
+        const filter = new Float32Array(fftBins);
+        const left = points[m - 1], center = points[m], right = points[m + 1];
+        for (let k = left; k < center && k < fftBins; k++) filter[k] = (k - left) / Math.max(1, center - left);
+        for (let k = center; k < right && k < fftBins; k++) filter[k] = (right - k) / Math.max(1, right - center);
+        filters.push(filter);
+      }
+      return filters;
+    }
+    function computeMel(buffer) {
+      if (!buffer) return null;
+      const data = buffer.getChannelData(0);
+      const sampleRate = buffer.sampleRate;
+      const fftSize = 512;
+      const hop = 240;
+      const fftBins = 128;
+      const melBins = 64;
+      const filters = melFilters(sampleRate, fftSize, melBins, fftBins);
+      const frames = Math.max(1, Math.floor(Math.max(0, data.length - fftSize) / hop) + 1);
+      const values = new Float32Array(frames * melBins);
+      const frame = new Float32Array(fftSize);
+      let min = Infinity, max = -Infinity;
+      for (let t = 0; t < frames; t++) {
+        const offset = t * hop;
+        for (let i = 0; i < fftSize; i++) frame[i] = (data[offset + i] || 0) * hann(i, fftSize);
+        const power = dftPower(frame, fftBins);
+        for (let m = 0; m < melBins; m++) {
+          const filter = filters[m];
+          let energy = 0;
+          for (let k = 0; k < fftBins; k++) energy += power[k] * filter[k];
+          const db = 10 * Math.log10(energy + 1e-10);
+          const idx = t * melBins + m;
+          values[idx] = db;
+          if (db < min) min = db;
+          if (db > max) max = db;
+        }
+      }
+      return { values, frames, melBins, min, max, sampleRate };
+    }
+    function melColor(value) {
+      value = Math.max(0, Math.min(1, value));
+      const stops = [[13,18,25], [35,58,112], [47,128,237], [183,108,255], [242,201,76]];
+      const scaled = value * (stops.length - 1);
+      const i = Math.min(stops.length - 2, Math.floor(scaled));
+      const t = scaled - i;
+      const a = stops[i], b = stops[i + 1];
+      return [
+        Math.round(a[0] + (b[0] - a[0]) * t),
+        Math.round(a[1] + (b[1] - a[1]) * t),
+        Math.round(a[2] + (b[2] - a[2]) * t),
+      ];
+    }
+    function drawMelSpectrogram(currentTime = 0) {
+      const c = $('mel');
+      if (!c) return;
+      const ctx = c.getContext('2d'), w = c.width, h = c.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#0d1219';
+      ctx.fillRect(0, 0, w, h);
+      if (!state.audioBuffer) {
+        ctx.fillStyle = '#9aa7b8';
+        ctx.fillText('Mel spectrogram loading...', 16, 24);
+        return;
+      }
+      if (!state.mel) state.mel = computeMel(state.audioBuffer);
+      const mel = state.mel;
+      if (!mel) return;
+      const img = ctx.createImageData(w, h);
+      const floor = Math.max(mel.min, mel.max - 72);
+      const range = Math.max(1, mel.max - floor);
+      for (let x = 0; x < w; x++) {
+        const frameIdx = Math.min(mel.frames - 1, Math.floor(x / w * mel.frames));
+        for (let y = 0; y < h; y++) {
+          const melIdx = Math.min(mel.melBins - 1, Math.floor((1 - y / h) * mel.melBins));
+          const db = mel.values[frameIdx * mel.melBins + melIdx];
+          const [r, g, b] = melColor((db - floor) / range);
+          const p = (y * w + x) * 4;
+          img.data[p] = r;
+          img.data[p + 1] = g;
+          img.data[p + 2] = b;
+          img.data[p + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      const duration = state.item?.stats?.duration_sec || state.audioBuffer.duration || 1;
+      const tl = state.item?.timeline || [];
+      tl.forEach(ent => {
+        const x = ent.start_sec / duration * w;
+        const ew = Math.max(1, (ent.end_sec - ent.start_sec) / duration * w);
+        ctx.fillStyle = ent.label === 'WAIT' ? 'rgba(47,128,237,.055)' : ent.label === 'ANSWER' ? 'rgba(39,174,96,.07)' : ent.label_type === 'text' ? 'rgba(183,108,255,.055)' : 'rgba(255,255,255,.018)';
+        ctx.fillRect(x, 0, ew, h);
+      });
+      ctx.strokeStyle = 'rgba(255,255,255,.22)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 1; i < 4; i++) {
+        const y = i * h / 4;
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(237,242,247,.88)';
+      ctx.font = '18px ui-monospace, Consolas, monospace';
+      ctx.fillText('Mel spectrogram', 14, 24);
+      ctx.fillStyle = 'rgba(237,242,247,.62)';
+      ctx.font = '14px ui-monospace, Consolas, monospace';
+      ctx.fillText('high', 14, 46);
+      ctx.fillText('low', 14, h - 12);
+      const cx = currentTime / duration * w;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, h);
+      ctx.stroke();
+    }
     function updateActive(idx) {
       const tl = state.item?.timeline || [];
       idx = Math.max(0, Math.min(tl.length - 1, idx || 0));
@@ -675,6 +833,7 @@
       updateActive(idx);
       updateCursor(ent.start_sec);
       drawWaveform(ent.start_sec);
+      drawMelSpectrogram(ent.start_sec);
     }
     function playChunk(idx) {
       const ent = (state.item.timeline || [])[idx];
