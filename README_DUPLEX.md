@@ -11,8 +11,17 @@ scripts/00_select_duplex_turns.py
 scripts/01_make_scenario_candidate_pools.py
   基于 turns 输出 normal QA、玩家打断 AI、不完整 query 三类候选池。
 
-scripts/02_run_cosyvoice_tts.py
-  预留给新的 turn 级 CosyVoice 批量 TTS runner。不要复用 legacy 单轮脚本。
+scripts/02_make_turn_tts_tasks.py
+  根据候选池为每段玩家 query 生成 TTS task 和 scenario_index。
+
+scripts/03_run_tts.py
+  执行 TTS task。支持真实 CosyVoice，也支持 --mock_tts 跑通链路。
+
+scripts/04_format_duplex_manifest.py
+  读取 scenario_index + query wav，拼 GN 和玩家语音，输出最终训练 manifest。
+
+scripts/05_validate_duplex_manifest.py
+  校验 manifest/audio/timeline 基础一致性。
 ```
 
 ## 已生成的中间产物
