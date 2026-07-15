@@ -268,9 +268,11 @@
     .seg.active { box-shadow: 0 0 0 2px #fff inset; }
     .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
     .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
-    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .kv { display: grid; grid-template-columns: 112px minmax(0,1fr); gap: 7px 10px; font-size: 12px; line-height: 1.45; }
+    .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; min-width: 0; }
+    .split > * { min-width: 0; }
+    .kv { display: grid; grid-template-columns: minmax(78px, 112px) minmax(0,1fr); gap: 7px 10px; font-size: 12px; line-height: 1.45; min-width: 0; }
     .kv .k { color: var(--muted); }
+    .kv > div { min-width: 0; overflow-wrap: anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     .text-box {
       border: 1px solid var(--line);
@@ -544,10 +546,10 @@
     function barList(counts) {
       const max = Math.max(1, ...Object.values(counts).map(Number));
       return Object.entries(counts).slice(0, 12).map(([k,v]) =>
-        `<div style="display:grid;grid-template-columns:64px 1fr 38px;gap:8px;align-items:center;margin-bottom:7px;font-size:12px">
-          <span class="mono">${esc(k)}</span>
+        `<div style="display:grid;grid-template-columns:minmax(42px,64px) minmax(72px,1fr) minmax(28px,38px);gap:8px;align-items:center;margin-bottom:7px;font-size:12px;min-width:0">
+          <span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(k)}</span>
           <span style="height:8px;background:#0f141b;border-radius:99px;overflow:hidden"><i style="display:block;width:${Math.max(4, v/max*100)}%;height:100%;background:${colors[k] || '#8f6cff'}"></i></span>
-          <span class="mono" style="color:var(--muted)">${v}</span>
+          <span class="mono" style="color:var(--muted);text-align:right">${v}</span>
         </div>`).join('');
     }
     function tokenStrip(timeline) {
