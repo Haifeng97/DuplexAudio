@@ -230,18 +230,12 @@ def matches_category(obj: Dict[str, Any], mode: str, contains: str) -> bool:
     raise ValueError(f"unknown category mode: {mode}")
 
 
-def build_sysprompt(obj: Dict[str, Any], include_reference: bool) -> str:
-    parts: List[str] = []
+def build_sysprompt(obj: Dict[str, Any], include_reference: bool) -> Tuple[str, bool]:
+    # The source system prompt is expected to be complete. meta_info.reference_text
+    # is kept in meta only and must not be appended here, otherwise state rows
+    # duplicate 【相关知识】/【游戏对局状态】 blocks.
     system = clean_sysprompt(obj.get("system", ""))
-    if system:
-        parts.append(system)
-    if include_reference:
-        meta_info = obj.get("meta_info")
-        if isinstance(meta_info, dict):
-            reference = clean_sysprompt(meta_info.get("reference_text", ""))
-            if reference:
-                parts.append(reference)
-    return "\n\n".join(parts).strip()
+    return system, False
 
 
 def build_example(
@@ -302,6 +296,7 @@ def build_example(
 
     vals = category_values(obj)
     meta_info = obj.get("meta_info") if isinstance(obj.get("meta_info"), dict) else {}
+    sysprompt, reference_text_appended = build_sysprompt(obj, include_reference)
     sid = safe_id(obj.get("hash_str") or obj.get("hash_key") or obj.get("id"), idx)
     answer_char_max = max(len(t["answer_text"]) for t in turns)
     question_char_max = max(len(t["question_text"]) for t in turns)
@@ -316,7 +311,7 @@ def build_example(
             "can_interrupt_donor": train_turns >= 1,
             "can_incomplete_query": question_char_max >= 8,
         },
-        "sysprompt": build_sysprompt(obj, include_reference),
+        "sysprompt": sysprompt,
         "turns": turns,
         "question_text": current_q,
         "answer_text": current_a,
@@ -339,6 +334,7 @@ def build_example(
             "role_name": vals["role_name"],
             "usage_scene": vals["usage_scene"],
             "reference_text_present": bool(meta_info.get("reference_text")),
+            "reference_text_appended": bool(reference_text_appended),
             "config": obj.get("config"),
             "user_profile": obj.get("user_profile"),
         },
@@ -353,7 +349,7 @@ def main() -> None:
     ap.add_argument("--stats_out", default="")
     ap.add_argument("--category_mode", choices=["game_state", "state", "all", "contains"], default="game_state")
     ap.add_argument("--category_contains", default="")
-    ap.add_argument("--include_reference", action="store_true", help="Append meta_info.reference_text to sysprompt")
+    ap.add_argument("--include_reference", action="store_true", help="Deprecated no-op; sysprompt uses system only")
     ap.add_argument("--min_question_chars", type=int, default=1)
     ap.add_argument("--max_question_chars", type=int, default=240)
     ap.add_argument("--max_answer_chars", type=int, default=360)
@@ -417,6 +413,7 @@ def main() -> None:
             counters["can_incomplete_query"] += int(bool(ex["selection"]["can_incomplete_query"]))
             counters["with_sysprompt"] += int(bool(ex["sysprompt"]))
             counters["with_reference_text"] += int(bool(meta["reference_text_present"]))
+            counters["with_reference_text_appended"] += int(bool(meta["reference_text_appended"]))
 
             fw.write(json.dumps(ex, ensure_ascii=False, separators=(",", ":")) + "\n")
             wrote_n += 1

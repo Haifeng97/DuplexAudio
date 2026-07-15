@@ -34,7 +34,8 @@ outputs/scenario_candidates_state_200/
 
 ```text
 sysprompt
-  来自 system，可追加 meta_info.reference_text。
+  来自 system。
+  meta_info.reference_text 不追加到 sysprompt，状态数据的 system 通常已经包含完整状态。
   不 TTS，不参与训练 loss。
 
 turns
