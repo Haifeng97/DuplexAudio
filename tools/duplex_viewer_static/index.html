@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Duplex Timeline Inspector</title>
+  <style>
+    :root {
+      --bg: #0f1218;
+      --panel: #161b23;
+      --panel-2: #1d2430;
+      --line: #2b3443;
+      --text: #edf2f7;
+      --muted: #9aa7b8;
+      --subtle: #687588;
+      --idle: #6f7785;
+      --wait: #2f80ed;
+      --answer: #27ae60;
+      --text-token: #b76cff;
+      --eor: #eb5757;
+      --gn: #f2c94c;
+      --query: #56ccf2;
+      --shadow: 0 18px 48px rgba(0, 0, 0, .26);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+    button, select, input { font: inherit; }
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    header {
+      grid-column: 1 / -1;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #11161d;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark {
+      width: 28px; height: 28px; border-radius: 7px;
+      background: linear-gradient(135deg, var(--wait), var(--text-token));
+      box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset;
+    }
+    .brand h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .top-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .sidebar {
+      min-height: 0;
+      border-right: 1px solid var(--line);
+      background: #121720;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .side-block { padding: 14px; border-bottom: 1px solid var(--line); }
+    .label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }
+    select, input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #0f141b;
+      color: var(--text);
+      border-radius: 7px;
+      padding: 9px 10px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: #4c84d9; box-shadow: 0 0 0 3px rgba(47,128,237,.18); }
+    .manifest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px;
+      min-width: 0;
+    }
+    .stat b { display: block; font-size: 16px; }
+    .stat span { color: var(--muted); font-size: 11px; }
+    .items {
+      overflow: auto;
+      padding: 8px;
+    }
+    .item {
+      width: 100%;
+      text-align: left;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      border-radius: 9px;
+      padding: 10px;
+      cursor: pointer;
+      display: grid;
+      gap: 7px;
+    }
+    .item:hover { background: rgba(255,255,255,.035); }
+    .item.active {
+      background: rgba(47,128,237,.12);
+      border-color: rgba(47,128,237,.45);
+    }
+    .item-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .item-id { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 3px 7px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .item-text { color: #d6dde7; font-size: 12px; line-height: 1.45; }
+    main {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.02), transparent 180px),
+        var(--bg);
+      padding: 16px 18px 28px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(360px, .85fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+      overflow: hidden;
+    }
+    .panel-head {
+      min-height: 42px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+    .panel-title { font-size: 13px; font-weight: 600; }
+    .panel-body { padding: 12px; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+    .sample-title {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.35;
+      font-weight: 600;
+    }
+    .sample-sub { color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+    .metric { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    .metric .v { font-size: 20px; font-weight: 600; }
+    .metric .k { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    audio { width: 100%; margin-top: 12px; }
+    .transport {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .btn:hover { border-color: #536276; background: #242d3b; }
+    .time-readout { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; margin-left: auto; }
+    canvas {
+      width: 100%;
+      height: 132px;
+      background: #0d1219;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: block;
+    }
+    .timeline-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1219;
+      max-height: 410px;
+      position: relative;
+    }
+    .timeline {
+      position: relative;
+      min-height: 210px;
+      padding: 34px 10px 12px 76px;
+    }
+    .cursor {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #ffffff;
+      box-shadow: 0 0 12px rgba(255,255,255,.75);
+      pointer-events: none;
+      z-index: 5;
+      transform: translateX(76px);
+    }
+    .tick {
+      position: absolute;
+      top: 6px;
+      color: var(--subtle);
+      font: 10px ui-monospace, SFMono-Regular, Consolas, monospace;
+      border-left: 1px solid rgba(255,255,255,.08);
+      height: calc(100% - 12px);
+      padding-left: 4px;
+    }
+    .lane { position: relative; height: 38px; margin-bottom: 9px; }
+    .lane-name {
+      position: absolute;
+      left: -66px;
+      top: 9px;
+      color: var(--muted);
+      width: 58px;
+      text-align: right;
+      font-size: 11px;
+    }
+    .seg {
+      position: absolute;
+      top: 4px;
+      height: 28px;
+      border-radius: 5px;
+      border: 1px solid rgba(255,255,255,.1);
+      display: flex;
+      align-items: center;
+      padding: 0 6px;
+      font-size: 11px;
+      color: #fff;
+      overflow: hidden;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .seg.idle { background: rgba(111,119,133,.42); }
+    .seg.wait { background: rgba(47,128,237,.68); }
+    .seg.answer { background: rgba(39,174,96,.72); }
+    .seg.text { background: rgba(183,108,255,.68); }
+    .seg.eor { background: rgba(235,87,87,.72); }
+    .seg.gn { outline: 1px solid rgba(242,201,76,.3); }
+    .seg.active { box-shadow: 0 0 0 2px #fff inset; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
+    .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .kv { display: grid; grid-template-columns: 112px minmax(0,1fr); gap: 7px 10px; font-size: 12px; line-height: 1.45; }
+    .kv .k { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .text-box {
+      border: 1px solid var(--line);
+      background: #0f141b;
+      border-radius: 8px;
+      padding: 10px;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .token-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      max-height: 170px;
+      overflow: auto;
+      padding: 8px;
+      background: #0f141b;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .tok {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 5px;
+      min-width: 25px;
+      height: 25px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tok.state { color: #dce8ff; }
+    .tok.text { color: #f1ddff; border-color: rgba(183,108,255,.45); }
+    .tok.active { outline: 2px solid #fff; }
+    .table-wrap { overflow: auto; max-height: 360px; border: 1px solid var(--line); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    th { position: sticky; top: 0; background: #101720; color: var(--muted); z-index: 2; }
+    tr.active td { background: rgba(255,255,255,.08); }
+    details { border-top: 1px solid var(--line); }
+    details:first-child { border-top: 0; }
+    summary { cursor: pointer; padding: 11px 12px; color: #dbe4ef; font-size: 13px; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      max-height: 420px;
+      background: #0d1219;
+      color: #d7e1ee;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .empty { color: var(--muted); padding: 48px; text-align: center; }
+    @media (max-width: 1180px) {
+      .app { grid-template-columns: 300px minmax(0, 1fr); }
+      .grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .app { height: auto; display: block; }
+      .sidebar { height: 420px; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { overflow: visible; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="mark"></div>
+        <div>
+          <h1>Duplex Timeline Inspector</h1>
+          <span>音频 / timeline / token / sysprompt 检查台</span>
+        </div>
+      </div>
+      <div class="top-meta" id="topMeta">Loading</div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="side-block">
+        <label class="label" for="manifestSelect">Manifest</label>
+        <select id="manifestSelect"></select>
+        <div class="manifest-stats">
+          <div class="stat"><b id="statCount">0</b><span>samples</span></div>
+          <div class="stat"><b id="statAvg">0s</b><span>avg duration</span></div>
+          <div class="stat"><b id="statScenarios">0</b><span>scenarios</span></div>
+        </div>
+      </div>
+      <div class="side-block">
+        <label class="label" for="searchInput">搜索 id / query / answer / scenario</label>
+        <input id="searchInput" placeholder="例如 interrupt / 头盔 / wait">
+      </div>
+      <div class="items" id="items"></div>
+    </aside>
+
+    <main>
+      <div id="content" class="empty">请选择一个样本</div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, activeIdx: -1, zoom: 18 };
+    const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
+
+    function fmtSec(v) {
+      const n = Number(v || 0);
+      return n.toFixed(n >= 10 ? 1 : 2) + 's';
+    }
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function scenarioName(s) {
+      return ({normal_qa:'正常QA', player_interrupts_ai:'玩家打断AI', incomplete_query:'不完整query'}[s] || s || '-');
+    }
+    async function api(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+    async function init() {
+      const data = await api('/api/manifests');
+      state.manifests = data.manifests;
+      $('topMeta').textContent = data.root;
+      $('manifestSelect').innerHTML = state.manifests.map(m =>
+        `<option value="${m.key}">${esc(m.path)} · ${m.count}</option>`).join('');
+      $('manifestSelect').addEventListener('change', () => {
+        state.manifestKey = Number($('manifestSelect').value);
+        loadItems();
+      });
+      $('searchInput').addEventListener('input', debounce(loadItems, 180));
+      await loadItems();
+    }
+    async function loadItems() {
+      const m = state.manifests[state.manifestKey];
+      $('statCount').textContent = m.count;
+      $('statAvg').textContent = fmtSec(m.avg_duration_sec);
+      $('statScenarios').textContent = Object.keys(m.scenario_counts || {}).length;
+      const q = encodeURIComponent($('searchInput').value.trim());
+      const data = await api(`/api/items?manifest=${state.manifestKey}&limit=500&q=${q}`);
+      state.items = data.items;
+      $('items').innerHTML = state.items.map(row => itemHtml(row)).join('');
+      document.querySelectorAll('.item').forEach(btn => {
+        btn.addEventListener('click', () => loadItem(Number(btn.dataset.index)));
+      });
+      if (state.items.length) await loadItem(state.items[0].index);
+      else $('content').innerHTML = '<div class="empty">没有匹配的样本</div>';
+    }
+    function itemHtml(row) {
+      return `<button class="item" data-index="${row.index}">
+        <div class="item-row">
+          <span class="pill">${esc(scenarioName(row.scenario))}</span>
+          <span class="pill">${fmtSec(row.duration_sec)} · ${row.timeline_chunks} chunks</span>
+        </div>
+        <div class="item-id">${esc(row.id)}</div>
+        <div class="item-text">${esc(row.question_text)}</div>
+      </button>`;
+    }
+    async function loadItem(index) {
+      document.querySelectorAll('.item').forEach(btn => btn.classList.toggle('active', Number(btn.dataset.index) === index));
+      state.item = await api(`/api/item?manifest=${state.manifestKey}&index=${index}`);
+      state.activeIdx = -1;
+      renderItem();
+      await loadWaveform();
+      drawWaveform(0);
+    }
+    function renderItem() {
+      const row = state.item, v = row._viewer || {}, stats = row.stats || {};
+      const labels = v.label_counts || {};
+      $('content').innerHTML = `
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">样本总览</div>
+              <span class="pill">${esc(v.manifest_path)} #${v.index}</span>
+            </div>
+            <div class="panel-body">
+              <div class="hero">
+                <div>
+                  <h2 class="sample-title">${esc(row.question_text || '-')}</h2>
+                  <div class="sample-sub">${esc(row.answer_text || '-')}</div>
+                </div>
+                <span class="pill">${esc(scenarioName(row.scenario))}</span>
+              </div>
+              <div class="metrics">
+                <div class="metric"><div class="v">${fmtSec(stats.duration_sec)}</div><div class="k">duration</div></div>
+                <div class="metric"><div class="v">${esc(row.sample_rate)}</div><div class="k">sample rate</div></div>
+                <div class="metric"><div class="v">${esc(row.chunk_ms)}ms</div><div class="k">chunk size</div></div>
+                <div class="metric"><div class="v">${esc(stats.timeline_chunks)}</div><div class="k">timeline chunks</div></div>
+              </div>
+              <audio id="audio" controls preload="metadata" src="${v.audio_url}"></audio>
+              <div class="transport">
+                <button class="btn" id="prevChunk">上一片</button>
+                <button class="btn" id="nextChunk">下一片</button>
+                <button class="btn" id="playChunk">播放当前片</button>
+                <label class="pill">Zoom <input id="zoom" type="range" min="8" max="54" value="${state.zoom}" style="width:120px"></label>
+                <span class="time-readout" id="timeReadout">0.00s</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">标签分布</div></div>
+            <div class="panel-body">
+              <div class="split">
+                <div>${barList(labels)}</div>
+                <div class="kv">
+                  <div class="k">ID</div><div class="mono">${esc(row.id)}</div>
+                  <div class="k">audio</div><div class="mono">${esc(row.audio)}</div>
+                  <div class="k">source</div><div>${esc(row.source)}</div>
+                  <div class="k">task</div><div>${esc(row.task)}</div>
+                  <div class="k">text tokens</div><div>${(row.timeline || []).filter(x => x.label_type === 'text').length}</div>
+                  <div class="k">state chunks</div><div>${(row.timeline || []).filter(x => x.label_type !== 'text').length}</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" style="grid-column: 1 / -1">
+            <div class="panel-head">
+              <div class="panel-title">波形和 Timeline</div>
+              <div class="legend">
+                <span><i class="dot" style="background:var(--idle)"></i>IDLE</span>
+                <span><i class="dot" style="background:var(--wait)"></i>WAIT</span>
+                <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
+                <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
+                <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <canvas id="wave" width="1600" height="220"></canvas>
+              <div style="height:10px"></div>
+              <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">Token 序列</div><span class="pill">点击可 seek</span></div>
+            <div class="panel-body"><div class="token-strip">${tokenStrip(row.timeline || [])}</div></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">当前 chunk</div></div>
+            <div class="panel-body"><div class="kv" id="chunkDetail"></div></div>
+          </section>
+
+          <section class="panel" style="grid-column: 1 / -1">
+            <div class="panel-head"><div class="panel-title">Chunk 明细表</div><span class="pill">${(row.timeline || []).length} rows</span></div>
+            <div class="panel-body"><div class="table-wrap">${timelineTable(row.timeline || [])}</div></div>
+          </section>
+
+          <section class="panel" style="grid-column: 1 / -1">
+            <details open><summary>Sysprompt</summary><div class="text-box">${esc(row.sysprompt || '')}</div></details>
+            <details><summary>Source Row JSON</summary><pre>${esc(JSON.stringify(row.source_row || {}, null, 2))}</pre></details>
+            <details><summary>Manifest Row JSON</summary><pre>${esc(JSON.stringify({...row, source_row: undefined}, null, 2))}</pre></details>
+          </section>
+        </div>`;
+      bindItem();
+      renderTimeline();
+      updateActive(0);
+    }
+    function barList(counts) {
+      const max = Math.max(1, ...Object.values(counts).map(Number));
+      return Object.entries(counts).slice(0, 12).map(([k,v]) =>
+        `<div style="display:grid;grid-template-columns:64px 1fr 38px;gap:8px;align-items:center;margin-bottom:7px;font-size:12px">
+          <span class="mono">${esc(k)}</span>
+          <span style="height:8px;background:#0f141b;border-radius:99px;overflow:hidden"><i style="display:block;width:${Math.max(4, v/max*100)}%;height:100%;background:${colors[k] || '#8f6cff'}"></i></span>
+          <span class="mono" style="color:var(--muted)">${v}</span>
+        </div>`).join('');
+    }
+    function tokenStrip(timeline) {
+      return timeline.map(ent => `<button class="tok ${ent.label_type === 'text' ? 'text' : 'state'}" data-idx="${ent.idx}" title="${esc(ent.kind)} ${esc(ent.audio_source)}">${esc(ent.token_text || ent.label)}</button>`).join('');
+    }
+    function timelineTable(timeline) {
+      return `<table><thead><tr><th>idx</th><th>time</th><th>label</th><th>type</th><th>kind</th><th>source</th><th>turn</th><th>sample</th></tr></thead><tbody>` +
+        timeline.map(ent => `<tr data-idx="${ent.idx}"><td>${ent.idx}</td><td>${fmtSec(ent.start_sec)}-${fmtSec(ent.end_sec)}</td><td class="mono">${esc(ent.token_text || ent.label)}</td><td>${esc(ent.label_type)}</td><td>${esc(ent.kind)}</td><td>${esc(ent.audio_source)}</td><td>${esc(ent.turn_id)}</td><td>${ent.start_sample}-${ent.end_sample}</td></tr>`).join('') + `</tbody></table>`;
+    }
+    function bindItem() {
+      const audio = $('audio');
+      audio.addEventListener('timeupdate', () => {
+        const idx = Math.floor(audio.currentTime / (state.item.chunk_ms / 1000));
+        updateActive(idx);
+        drawWaveform(audio.currentTime);
+      });
+      audio.addEventListener('seeked', () => drawWaveform(audio.currentTime));
+      $('prevChunk').onclick = () => seekChunk(Math.max(0, state.activeIdx - 1));
+      $('nextChunk').onclick = () => seekChunk(Math.min((state.item.timeline || []).length - 1, state.activeIdx + 1));
+      $('playChunk').onclick = () => playChunk(state.activeIdx);
+      $('zoom').oninput = (e) => { state.zoom = Number(e.target.value); renderTimeline(); updateActive(state.activeIdx); };
+      document.querySelectorAll('[data-idx]').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
+    }
+    function renderTimeline() {
+      const row = state.item, tl = row.timeline || [], groups = row._viewer.timeline_groups || [];
+      const px = state.zoom, width = Math.max(800, tl.length * px + 100);
+      const lanes = ['state', 'text', 'audio_source', 'turn'];
+      const html = [`<div class="cursor" id="cursor"></div>`];
+      for (let s = 0; s <= Math.ceil((row.stats.duration_sec || 0)); s++) {
+        html.push(`<div class="tick" style="left:${76 + s / (row.chunk_ms/1000) * px}px">${s}s</div>`);
+      }
+      lanes.forEach((lane, laneIdx) => {
+        html.push(`<div class="lane" style="width:${width}px"><div class="lane-name">${lane}</div>`);
+        groups.forEach(g => {
+          const left = g.start_idx * px, w = Math.max(6, g.chunks * px - 2);
+          const cls = segmentClass(g, lane);
+          const text = lane === 'audio_source' ? g.audio_source : lane === 'turn' ? `turn ${g.turn_id}` : (g.text || g.label);
+          html.push(`<div class="seg ${cls}" data-idx="${g.start_idx}" style="left:${left}px;width:${w}px" title="${esc(g.start_sec)}-${esc(g.end_sec)} ${esc(g.kind)} ${esc(g.audio_source)}">${esc(text)}</div>`);
+        });
+        html.push('</div>');
+      });
+      $('timeline').style.width = width + 86 + 'px';
+      $('timeline').innerHTML = html.join('');
+      document.querySelectorAll('.seg').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
+    }
+    function segmentClass(g, lane) {
+      if (lane === 'audio_source') return String(g.audio_source || '').startsWith('gn') || String(g.audio_source || '').includes('_gn') ? 'gn idle' : 'wait';
+      if (lane === 'turn') return 'idle';
+      if (g.label === 'WAIT') return 'wait';
+      if (g.label === 'IDLE') return 'idle';
+      if (g.label === 'ANSWER') return 'answer';
+      if (g.label === '<EOR>') return 'eor';
+      return 'text';
+    }
+    async function loadWaveform() {
+      state.audioBuffer = null;
+      try {
+        const res = await fetch(state.item._viewer.audio_url);
+        const arr = await res.arrayBuffer();
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        state.audioBuffer = await ctx.decodeAudioData(arr.slice(0));
+        await ctx.close();
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+    function drawWaveform(currentTime = 0) {
+      const c = $('wave');
+      if (!c) return;
+      const ctx = c.getContext('2d'), w = c.width, h = c.height;
+      ctx.clearRect(0,0,w,h);
+      ctx.fillStyle = '#0d1219'; ctx.fillRect(0,0,w,h);
+      const tl = state.item?.timeline || [], duration = state.item?.stats?.duration_sec || 1;
+      tl.forEach(ent => {
+        const x = ent.start_sec / duration * w;
+        const ew = Math.max(1, (ent.end_sec - ent.start_sec) / duration * w);
+        ctx.fillStyle = ent.label === 'WAIT' ? 'rgba(47,128,237,.10)' : ent.label === 'ANSWER' ? 'rgba(39,174,96,.14)' : ent.label_type === 'text' ? 'rgba(183,108,255,.10)' : 'rgba(255,255,255,.025)';
+        ctx.fillRect(x, 0, ew, h);
+      });
+      if (state.audioBuffer) {
+        const data = state.audioBuffer.getChannelData(0);
+        const step = Math.ceil(data.length / w);
+        ctx.strokeStyle = '#8ec7ff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        for (let x=0; x<w; x++) {
+          let min = 1, max = -1;
+          for (let j=0; j<step; j++) {
+            const v = data[x*step+j] || 0;
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          ctx.moveTo(x, (1+min)*h/2);
+          ctx.lineTo(x, (1+max)*h/2);
+        }
+        ctx.stroke();
+      }
+      const cx = currentTime / duration * w;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+    }
+    function updateActive(idx) {
+      const tl = state.item?.timeline || [];
+      idx = Math.max(0, Math.min(tl.length - 1, idx || 0));
+      state.activeIdx = idx;
+      const ent = tl[idx] || {};
+      $('timeReadout') && ($('timeReadout').textContent = `${fmtSec(ent.start_sec)} / ${fmtSec(state.item.stats.duration_sec)} · chunk ${idx}`);
+      const cursor = $('cursor');
+      if (cursor) cursor.style.transform = `translateX(${76 + idx * state.zoom}px)`;
+      document.querySelectorAll('[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
+      document.querySelectorAll('tr[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
+      const detail = $('chunkDetail');
+      if (detail) detail.innerHTML = Object.entries(ent).map(([k,v]) => `<div class="k">${esc(k)}</div><div class="mono">${esc(v)}</div>`).join('');
+    }
+    function seekChunk(idx) {
+      const ent = (state.item.timeline || [])[idx];
+      if (!ent) return;
+      $('audio').currentTime = ent.start_sec;
+      updateActive(idx);
+      drawWaveform(ent.start_sec);
+    }
+    function playChunk(idx) {
+      const ent = (state.item.timeline || [])[idx];
+      if (!ent) return;
+      const audio = $('audio');
+      audio.currentTime = ent.start_sec;
+      audio.play();
+      const stopAt = ent.end_sec;
+      const timer = setInterval(() => {
+        if (audio.currentTime >= stopAt || audio.paused) {
+          audio.pause();
+          clearInterval(timer);
+        }
+      }, 20);
+    }
+    function debounce(fn, ms) {
+      let t;
+      return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+    init().catch(err => {
+      console.error(err);
+      $('content').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+    });
+  </script>
+</body>
+</html>
