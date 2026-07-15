@@ -212,6 +212,7 @@
     }
     .cursor {
       position: absolute;
+      left: 0;
       top: 0;
       bottom: 0;
       width: 2px;
@@ -219,7 +220,6 @@
       box-shadow: 0 0 12px rgba(255,255,255,.75);
       pointer-events: none;
       z-index: 5;
-      transform: translateX(76px);
     }
     .tick {
       position: absolute;
@@ -556,9 +556,13 @@
       audio.addEventListener('timeupdate', () => {
         const idx = Math.floor(audio.currentTime / (state.item.chunk_ms / 1000));
         updateActive(idx);
+        updateCursor(audio.currentTime);
         drawWaveform(audio.currentTime);
       });
-      audio.addEventListener('seeked', () => drawWaveform(audio.currentTime));
+      audio.addEventListener('seeked', () => {
+        updateCursor(audio.currentTime);
+        drawWaveform(audio.currentTime);
+      });
       $('prevChunk').onclick = () => seekChunk(Math.max(0, state.activeIdx - 1));
       $('nextChunk').onclick = () => seekChunk(Math.min((state.item.timeline || []).length - 1, state.activeIdx + 1));
       $('playChunk').onclick = () => playChunk(state.activeIdx);
@@ -650,17 +654,26 @@
       const ent = tl[idx] || {};
       $('timeReadout') && ($('timeReadout').textContent = `${fmtSec(ent.start_sec)} / ${fmtSec(state.item.stats.duration_sec)} · chunk ${idx}`);
       const cursor = $('cursor');
-      if (cursor) cursor.style.transform = `translateX(${76 + idx * state.zoom}px)`;
+      if (cursor) cursor.style.left = `${76 + idx * state.zoom}px`;
       document.querySelectorAll('[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
       document.querySelectorAll('tr[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
       const detail = $('chunkDetail');
       if (detail) detail.innerHTML = Object.entries(ent).map(([k,v]) => `<div class="k">${esc(k)}</div><div class="mono">${esc(v)}</div>`).join('');
+    }
+    function updateCursor(timeSec) {
+      const cursor = $('cursor');
+      if (!cursor || !state.item) return;
+      const chunkSec = state.item.chunk_ms / 1000;
+      const maxX = (state.item.timeline || []).length * state.zoom;
+      const x = Math.max(0, Math.min(maxX, Number(timeSec || 0) / chunkSec * state.zoom));
+      cursor.style.left = `${76 + x}px`;
     }
     function seekChunk(idx) {
       const ent = (state.item.timeline || [])[idx];
       if (!ent) return;
       $('audio').currentTime = ent.start_sec;
       updateActive(idx);
+      updateCursor(ent.start_sec);
       drawWaveform(ent.start_sec);
     }
     function playChunk(idx) {
