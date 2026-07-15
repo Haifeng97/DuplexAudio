@@ -46,8 +46,27 @@ turns
 玩家打断 AI
   当前只生成候选 pair。
   没有专门的 interrupt token。玩家插话时，新的玩家语音 chunk 仍标 WAIT。
-  形式上是：base question -> ANSWER + base answer prefix -> donor question WAIT -> ANSWER + donor answer。
+  音频形式：
+    GN1 + query1_audio + GN2_short + query2_audio + GN3
+  Timeline 形式：
+    IDLE... WAIT... ANSWER text_prefix... WAIT... ANSWER donor_text... EOR IDLE...
+  其中 GN2_short 不够完整输出 base answer，因此 base answer 没有 EOR。
 
 不完整 query
-  当前只生成 partial/full 候选。partial 后停顿标 D_WAIT 还是 IDLE 仍需按训练协议确认。
+  当前生成 query_part1/query_part2 候选。
+  音频形式：
+    GN1 + query_part1_audio + GN_between(1-2s) + query_part2_audio + GN_answer + GN_after
+  Timeline 形式：
+    GN1 -> IDLE
+    query_part1_audio -> WAIT
+    GN_between -> WAIT
+    query_part2_audio -> WAIT
+    GN_answer -> ANSWER + text tokens + EOR
+    GN_after -> IDLE
+
+正常场景
+  多轮时按 turn 顺序展开：
+    GN1 + query1_audio + GN2 + query2_audio + GN3 ...
+  每轮回复前必须有 ANSWER，回复结束后有 EOR。
+  回复区域 GN 时长按 `ceil(len(answer_text) * 1.1) * chunk_ms` 估算，默认 chunk_ms=180。
 ```

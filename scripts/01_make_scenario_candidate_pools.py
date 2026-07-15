@@ -37,8 +37,13 @@ def first_turn(row: Dict[str, Any]) -> Dict[str, Any] | None:
     return None
 
 
-def normal_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
+def answer_gn_chunks(answer_text: str) -> int:
+    return max(1, int(len(answer_text) * 1.1 + 0.999999))
+
+
+def normal_candidate(row: Dict[str, Any], chunk_ms: int) -> Dict[str, Any]:
     turn = first_turn(row) or {}
+    answer_text = str(turn.get("answer_text", row.get("answer_text", "")))
     return {
         "id": row["id"],
         "scenario": "normal_qa",
@@ -46,7 +51,25 @@ def normal_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         "sysprompt": row.get("sysprompt", ""),
         "turns": row.get("turns", []),
         "question_text": turn.get("question_text", row.get("question_text", "")),
-        "answer_text": turn.get("answer_text", row.get("answer_text", "")),
+        "answer_text": answer_text,
+        "audio_plan": [
+            "gn_before",
+            "query_audio",
+            "gn_answer_region",
+            "gn_after",
+        ],
+        "timeline_plan": [
+            "gn_before -> IDLE",
+            "query_audio -> WAIT",
+            "gn_answer_region -> ANSWER + answer text tokens + EOR",
+            "gn_after -> IDLE",
+        ],
+        "gn_policy": {
+            "chunk_ms": chunk_ms,
+            "answer_gn_chunks": answer_gn_chunks(answer_text),
+            "answer_gn_duration_sec": round(answer_gn_chunks(answer_text) * chunk_ms / 1000.0, 6),
+            "answer_gn_formula": "ceil(len(answer_text) * 1.1) chunks",
+        },
         "meta": row.get("meta", {}),
     }
 
@@ -76,14 +99,34 @@ def interrupt_candidate(base: Dict[str, Any], donor: Dict[str, Any], prefix_char
             "answer_text": donor_turn.get("answer_text", ""),
             "meta": donor.get("meta", {}),
         },
+        "audio_plan": [
+            "gn_before",
+            "base_query_audio",
+            "gn_base_answer_prefix_region",
+            "donor_query_audio",
+            "gn_donor_answer_region",
+            "gn_after",
+        ],
         "intended_timeline": [
+            "gn_before -> IDLE",
             "base question TTS -> D_WAIT",
-            "base answer prefix over gaussian -> A_ANSWER + prefix tokens",
-            "donor question TTS starts while base answer is unfinished -> D_WAIT",
+            "short gaussian region -> A_ANSWER + base answer prefix tokens, no EOR",
+            "donor question starts while base answer is unfinished -> D_WAIT",
             "donor remaining question TTS -> D_WAIT",
             "donor answer over gaussian -> A_ANSWER + donor answer tokens + EOR",
+            "gn_after -> IDLE",
         ],
     }
+
+
+def choose_query_split(q: str, rng: random.Random, min_prefix_chars: int) -> int | None:
+    if len(q) < max(min_prefix_chars + 2, 8):
+        return None
+    lo = min_prefix_chars
+    hi = max(min_prefix_chars + 1, min(len(q) - 1, int(len(q) * 0.7)))
+    if hi <= lo:
+        return None
+    return rng.randint(lo, hi)
 
 
 def incomplete_candidate(row: Dict[str, Any], rng: random.Random, min_prefix_chars: int) -> Dict[str, Any] | None:
@@ -91,21 +134,46 @@ def incomplete_candidate(row: Dict[str, Any], rng: random.Random, min_prefix_cha
     if not turn:
         return None
     q = str(turn.get("question_text", ""))
-    if len(q) < max(min_prefix_chars + 2, 8):
+    cut = choose_query_split(q, rng, min_prefix_chars)
+    if cut is None:
         return None
-    hi = max(min_prefix_chars + 1, min(len(q) - 1, int(len(q) * 0.7)))
-    if hi <= min_prefix_chars:
-        return None
-    cut = rng.randint(min_prefix_chars, hi)
+    gn_between_sec = round(rng.uniform(1.0, 2.0), 3)
+    part1 = q[:cut]
+    part2 = q[cut:]
     return {
         "id": f"incomplete__{row['id']}__cut{cut}",
         "scenario": "incomplete_query_candidate",
         "source_id": row["id"],
         "sysprompt": row.get("sysprompt", ""),
-        "partial_question_text": q[:cut],
+        "query_part1_text": part1,
+        "query_part2_text": part2,
+        "partial_question_text": part1,
         "full_question_text": q,
         "answer_text_if_complete": turn.get("answer_text", ""),
-        "label_policy_tbd": "During partial speech chunks use D_WAIT; post-partial pause label still needs protocol decision: D_WAIT vs IDLE.",
+        "split": {
+            "cut_char_index": cut,
+            "unicode_codepoint_boundary": True,
+        },
+        "audio_plan": [
+            "gn_before",
+            "query_part1_audio",
+            "gn_between_query_parts",
+            "query_part2_audio",
+            "gn_answer_region",
+            "gn_after",
+        ],
+        "timeline_plan": [
+            "gn_before -> IDLE",
+            "query_part1_audio -> WAIT",
+            "gn_between_query_parts -> WAIT",
+            "query_part2_audio -> WAIT",
+            "gn_answer_region -> ANSWER + answer text tokens + EOR",
+            "gn_after -> IDLE",
+        ],
+        "gn_policy": {
+            "between_query_parts_sec": gn_between_sec,
+            "between_query_parts_range_sec": [1.0, 2.0],
+        },
         "meta": row.get("meta", {}),
     }
 
@@ -118,6 +186,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=20260715)
     ap.add_argument("--min_interrupt_answer_chars", type=int, default=8)
     ap.add_argument("--min_incomplete_prefix_chars", type=int, default=3)
+    ap.add_argument("--chunk_ms", type=int, default=180)
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -138,7 +207,7 @@ def main() -> None:
     rng.shuffle(interrupt_donor_pool)
     rng.shuffle(incomplete_pool)
 
-    normal_rows = [normal_candidate(r) for r in normal_pool[: args.limit_each]]
+    normal_rows = [normal_candidate(r, args.chunk_ms) for r in normal_pool[: args.limit_each]]
 
     interrupt_rows = []
     pair_count = min(args.limit_each, len(interrupt_base_pool), len(interrupt_donor_pool))
