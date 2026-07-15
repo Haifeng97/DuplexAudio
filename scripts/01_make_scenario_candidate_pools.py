@@ -79,7 +79,7 @@ def interrupt_candidate(base: Dict[str, Any], donor: Dict[str, Any], prefix_char
         "intended_timeline": [
             "base question TTS -> D_WAIT",
             "base answer prefix over gaussian -> A_ANSWER + prefix tokens",
-            "donor first question chunk -> G_INTERRUPT",
+            "donor question TTS starts while base answer is unfinished -> D_WAIT",
             "donor remaining question TTS -> D_WAIT",
             "donor answer over gaussian -> A_ANSWER + donor answer tokens + EOR",
         ],

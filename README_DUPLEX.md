@@ -12,7 +12,7 @@ scripts/01_make_scenario_candidate_pools.py
   基于 turns 输出 normal QA、玩家打断 AI、不完整 query 三类候选池。
 
 scripts/02_run_cosyvoice_tts.py
-  复用 CosyVoice 批量 TTS runner。后续生成 turn 级 TTS tasks 后继续使用。
+  预留给新的 turn 级 CosyVoice 批量 TTS runner。不要复用 legacy 单轮脚本。
 ```
 
 ## 已生成的中间产物
@@ -44,8 +44,9 @@ turns
   answer_text 不 TTS，只作为文本 token 监督。
 
 玩家打断 AI
-  当前只生成候选 pair。最终 timeline 规则应参考 QA interrupt：
-  base question -> base answer prefix -> donor first chunk G_INTERRUPT -> donor WAIT -> donor answer。
+  当前只生成候选 pair。
+  没有专门的 interrupt token。玩家插话时，新的玩家语音 chunk 仍标 WAIT。
+  形式上是：base question -> ANSWER + base answer prefix -> donor question WAIT -> ANSWER + donor answer。
 
 不完整 query
   当前只生成 partial/full 候选。partial 后停顿标 D_WAIT 还是 IDLE 仍需按训练协议确认。
