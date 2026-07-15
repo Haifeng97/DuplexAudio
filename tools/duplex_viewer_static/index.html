@@ -132,7 +132,7 @@
       display: grid;
       grid-template-columns: minmax(0, 1.45fr) minmax(360px, .85fr);
       gap: 16px;
-      align-items: start;
+      align-items: stretch;
     }
     .panel {
       background: var(--panel);
@@ -268,7 +268,9 @@
     .seg.active { box-shadow: 0 0 0 2px #fff inset; }
     .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
     .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
-    .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; min-width: 0; }
+    .label-panel { min-height: 0; display: flex; flex-direction: column; }
+    .label-panel .panel-body { flex: 1; min-height: 0; overflow: auto; }
+    .split { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(340px, 1fr); gap: 12px; min-width: 640px; }
     .split > * { min-width: 0; }
     .kv { display: grid; grid-template-columns: minmax(78px, 112px) minmax(0,1fr); gap: 7px 10px; font-size: 12px; line-height: 1.45; min-width: 0; }
     .kv .k { color: var(--muted); }
@@ -482,7 +484,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section class="panel label-panel">
             <div class="panel-head"><div class="panel-title">标签分布</div></div>
             <div class="panel-body">
               <div class="split">
