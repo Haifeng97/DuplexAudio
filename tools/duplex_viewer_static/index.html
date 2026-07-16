@@ -144,6 +144,7 @@
       overflow: hidden;
     }
     .panel-head {
+      position: relative;
       min-height: 42px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
@@ -271,7 +272,18 @@
     .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
     .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
     .panel-head-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .switch-row { order: -1; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .switch-row {
+      position: absolute;
+      left: 150px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
     .switch-row > span:last-child { width: 0; overflow: hidden; font-size: 0; }
     .switch-row::after { content: "\5361\7684\8bdd\53ef\4ee5\5173"; font-size: 12px; color: var(--muted); }
     .switch {
