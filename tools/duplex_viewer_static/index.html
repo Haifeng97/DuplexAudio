@@ -270,6 +270,55 @@
     .seg.active { box-shadow: 0 0 0 2px #fff inset; }
     .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
     .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+    .panel-head-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .switch-row { order: -1; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .switch-row > span:last-child { width: 0; overflow: hidden; font-size: 0; }
+    .switch-row::after { content: "\5361\7684\8bdd\53ef\4ee5\5173"; font-size: 12px; color: var(--muted); }
+    .switch {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      cursor: pointer;
+    }
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      width: 1px;
+      height: 1px;
+      pointer-events: none;
+    }
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #344051;
+      border: 1px solid rgba(255,255,255,.08);
+      transition: background .16s ease, border-color .16s ease;
+    }
+    .switch-thumb {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #f4f7fb;
+      box-shadow: 0 2px 6px rgba(0,0,0,.35);
+      transition: transform .16s ease;
+    }
+    .switch input:checked + .switch-track {
+      background: var(--answer);
+      border-color: rgba(255,255,255,.16);
+    }
+    .switch input:checked + .switch-track + .switch-thumb {
+      transform: translateX(18px);
+    }
+    .switch input:focus + .switch-track {
+      box-shadow: 0 0 0 3px rgba(47,128,237,.24);
+    }
     .label-panel { min-height: 0; display: flex; flex-direction: column; }
     .label-panel .panel-body { flex: 1; min-height: 0; overflow: auto; }
     .split { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(340px, 1fr); gap: 12px; min-width: 640px; }
@@ -386,7 +435,7 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, mel: null, melEnabled: false, activeIdx: -1, zoom: 18 };
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, mel: null, melEnabled: true, activeIdx: -1, zoom: 18 };
     const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
 
     function fmtSec(v) {
@@ -512,7 +561,7 @@
                 <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
-                <label class="pill"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}> Mel</label>
+                <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>å¡çš„è¯å¯ä»¥å…³</span></label>
               </div>
             </div>
             <div class="panel-body">
