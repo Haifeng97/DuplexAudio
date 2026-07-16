@@ -76,6 +76,7 @@
       outline: none;
     }
     input:focus, select:focus { border-color: #4c84d9; box-shadow: 0 0 0 3px rgba(47,128,237,.18); }
+    input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--wait); }
     .manifest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
     .stat {
       background: var(--panel);
@@ -201,6 +202,7 @@
       height: 220px;
       margin-top: 10px;
     }
+    #mel.is-hidden { display: none; }
     .timeline-wrap {
       overflow: auto;
       border: 1px solid var(--line);
@@ -384,7 +386,7 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, mel: null, activeIdx: -1, zoom: 18 };
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, audioBuffer: null, mel: null, melEnabled: false, activeIdx: -1, zoom: 18 };
     const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
 
     function fmtSec(v) {
@@ -447,7 +449,7 @@
       renderItem();
       await loadWaveform();
       drawWaveform(0);
-      drawMelSpectrogram(0);
+      if (state.melEnabled) drawMelSpectrogram(0);
     }
     function renderItem() {
       const row = state.item, v = row._viewer || {}, stats = row.stats || {};
@@ -510,11 +512,12 @@
                 <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
+                <label class="pill"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}> Mel</label>
               </div>
             </div>
             <div class="panel-body">
               <canvas id="wave" width="1600" height="220"></canvas>
-              <canvas id="mel" width="1600" height="320"></canvas>
+              <canvas id="mel" class="${state.melEnabled ? '' : 'is-hidden'}" width="1600" height="320"></canvas>
               <div style="height:10px"></div>
               <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
             </div>
@@ -579,6 +582,12 @@
       $('nextChunk').onclick = () => seekChunk(Math.min((state.item.timeline || []).length - 1, state.activeIdx + 1));
       $('playChunk').onclick = () => playChunk(state.activeIdx);
       $('zoom').oninput = (e) => { state.zoom = Number(e.target.value); renderTimeline(); updateActive(state.activeIdx); };
+      $('melToggle').onchange = (e) => {
+        state.melEnabled = e.target.checked;
+        const mel = $('mel');
+        if (mel) mel.classList.toggle('is-hidden', !state.melEnabled);
+        if (state.melEnabled) drawMelSpectrogram($('audio')?.currentTime || 0);
+      };
       document.querySelectorAll('[data-idx]').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
     }
     function renderTimeline() {
@@ -746,6 +755,7 @@
       ];
     }
     function drawMelSpectrogram(currentTime = 0) {
+      if (!state.melEnabled) return;
       const c = $('mel');
       if (!c) return;
       const ctx = c.getContext('2d'), w = c.width, h = c.height;
