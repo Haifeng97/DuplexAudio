@@ -1,0 +1,8 @@
+tts_tasks:
+  voice_bank: /home/haifeng/Projects/voice_gen/work/scripted_smoke/voice_bank/voice_bank.jsonl
+  voice_strategy: sample_hash
+  voice_seed: 42
+  max_voice_refs: 0
+  max_ref_text_chars: 12
+  min_ref_snr: 0.0
+  tts_text_punct: true

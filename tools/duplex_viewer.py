@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import mimetypes
 import os
 import posixpath
 import re
 import sys
+import wave
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "duplex_viewer_static"
+WAVEFORM_CACHE: Dict[Tuple[str, int, int, int], Dict[str, Any]] = {}
 
 
 def compact_text(value: Any, limit: int = 120) -> str:
@@ -200,6 +203,70 @@ def parse_int(params: Dict[str, List[str]], name: str, default: int = 0) -> int:
         return default
 
 
+def row_audio_path(row: Dict[str, Any]) -> Path:
+    audio_path = resolve_project_path(str(row.get("audio") or ""))
+    if not audio_path.is_file():
+        raise FileNotFoundError(audio_path)
+    try:
+        audio_path.relative_to(ROOT)
+    except ValueError as exc:
+        raise PermissionError(f"audio path outside project root: {audio_path}") from exc
+    return audio_path
+
+
+def waveform_payload(audio_path: Path, width: int = 1600) -> Dict[str, Any]:
+    width = max(64, min(4096, int(width)))
+    st = audio_path.stat()
+    cache_key = (str(audio_path), st.st_mtime_ns, st.st_size, width)
+    cached = WAVEFORM_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    with wave.open(str(audio_path), "rb") as wf:
+        channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        frame_count = wf.getnframes()
+        raw = wf.readframes(frame_count)
+
+    if sample_width != 2:
+        raise ValueError(f"unsupported sample width for waveform: {sample_width}")
+
+    samples = array.array("h")
+    samples.frombytes(raw)
+    if sys.byteorder != "little":
+        samples.byteswap()
+
+    bucket_frames = max(1, (frame_count + width - 1) // width)
+    peaks: List[List[float]] = []
+    scale = 32768.0
+    for bucket_start in range(0, frame_count, bucket_frames):
+        bucket_end = min(frame_count, bucket_start + bucket_frames)
+        start = bucket_start * channels
+        end = bucket_end * channels
+        lo = 0
+        hi = 0
+        for sample in samples[start:end]:
+            if sample < lo:
+                lo = sample
+            if sample > hi:
+                hi = sample
+        peaks.append([round(lo / scale, 4), round(hi / scale, 4)])
+
+    payload = {
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "frames": frame_count,
+        "duration_sec": round(frame_count / sample_rate, 6) if sample_rate else 0,
+        "width": width,
+        "peaks": peaks,
+    }
+    WAVEFORM_CACHE[cache_key] = payload
+    if len(WAVEFORM_CACHE) > 256:
+        WAVEFORM_CACHE.pop(next(iter(WAVEFORM_CACHE)))
+    return payload
+
+
 def item_payload(manifest_key: int, manifest: ManifestIndex, index: int) -> Dict[str, Any]:
     row = manifest.read_row(index)
     timeline = row.get("timeline") or []
@@ -207,6 +274,7 @@ def item_payload(manifest_key: int, manifest: ManifestIndex, index: int) -> Dict
         "manifest_path": safe_rel(manifest.path),
         "index": index,
         "audio_url": f"/api/audio?manifest={manifest_key}&index={index}",
+        "waveform_url": f"/api/waveform?manifest={manifest_key}&index={index}&width=1600",
         "label_counts": label_counts(timeline),
         "source_counts": source_counts(timeline),
         "timeline_groups": timeline_groups(timeline),
@@ -242,6 +310,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.api_items(params)
             elif parsed.path == "/api/item":
                 self.api_item(params)
+            elif parsed.path == "/api/waveform":
+                self.api_waveform(params)
             elif parsed.path == "/api/audio":
                 self.api_audio(params)
             else:
@@ -278,14 +348,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_audio(self, params: Dict[str, List[str]]) -> None:
         manifest = APP.manifest(parse_int(params, "manifest"))
         row = manifest.read_row(parse_int(params, "index"))
-        audio_path = resolve_project_path(str(row.get("audio") or ""))
-        if not audio_path.is_file():
-            raise FileNotFoundError(audio_path)
-        try:
-            audio_path.relative_to(ROOT)
-        except ValueError as exc:
-            raise PermissionError(f"audio path outside project root: {audio_path}") from exc
+        audio_path = row_audio_path(row)
         self.send_file_with_range(audio_path, "audio/wav")
+
+    def api_waveform(self, params: Dict[str, List[str]]) -> None:
+        manifest = APP.manifest(parse_int(params, "manifest"))
+        row = manifest.read_row(parse_int(params, "index"))
+        audio_path = row_audio_path(row)
+        self.send_json(waveform_payload(audio_path, parse_int(params, "width", 1600)))
 
     def static_file(self, request_path: str) -> None:
         if request_path in ("", "/"):
@@ -317,6 +387,7 @@ class Handler(BaseHTTPRequestHandler):
         length = end - start + 1
         self.send_response(status)
         self.send_header("Content-Type", mime)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
         if status == HTTPStatus.PARTIAL_CONTENT:

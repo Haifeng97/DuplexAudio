@@ -1,0 +1,8 @@
+tts_tasks:
+  voice_bank: outputs/esd_voice_bank_zh_neutral60/voice_bank.jsonl
+  voice_strategy: sample_hash
+  voice_seed: 42
+  max_voice_refs: 0
+  max_ref_text_chars: 30
+  min_ref_snr: 0.0
+  tts_text_punct: true

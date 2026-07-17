@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 
+V3_EOP = "<|endofprompt|>"
+V3_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+
+
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8", errors="ignore") as f:
@@ -29,6 +33,19 @@ def write_wav_pcm16(path: Path, samples: Iterable[int], sample_rate: int) -> Non
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(data)
+
+
+def looks_like_cosyvoice3(model_dir: str) -> bool:
+    name = Path(model_dir).name.lower()
+    return "cosyvoice3" in name or "cv3" in name or "fun-cosyvoice3" in name
+
+
+def prep_ref_text(ref_text: str, model_dir: str) -> str:
+    if not looks_like_cosyvoice3(model_dir):
+        return ref_text
+    if V3_EOP in (ref_text or ""):
+        return ref_text
+    return f"{V3_DEFAULT_SYSTEM_PROMPT}{V3_EOP}{ref_text or ''}"
 
 
 def mock_tts(text: str, out: Path, sample_rate: int) -> None:
@@ -60,9 +77,10 @@ def run_cosyvoice(tasks: List[Dict[str, Any]], args: argparse.Namespace) -> List
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
             last = None
+            ref_text = prep_ref_text(str(task.get("ref_text", "")), args.model_dir)
             for last in model.inference_zero_shot(
                 task["text"],
-                task["ref_text"],
+                ref_text,
                 task["ref_wav"],
                 stream=False,
             ):

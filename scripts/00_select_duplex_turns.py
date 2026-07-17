@@ -13,10 +13,53 @@ from typing import Any, Dict, Iterator, List, Tuple
 FULLWIDTH_USER = "<｜User｜>"
 FULLWIDTH_ASSISTANT = "<｜Assistant｜>"
 FULLWIDTH_EOS = "<｜end▁of▁sentence｜>"
+DS_USER_TOKENS = (FULLWIDTH_USER,)
+DS_ASSISTANT_TOKENS = (FULLWIDTH_ASSISTANT,)
+
+
+DEFAULT_EXCLUDE_CATEGORIES = ["以游戏为中心-基于状态的闲聊-决策问答"]
+DEFAULT_PAREN_EMOTES = {
+    "傲慢", "白眼", "鄙视", "闭嘴", "擦汗", "呲牙", "哈欠", "大哭", "得意", "发呆",
+    "发怒", "奋斗", "尴尬", "鼓掌", "害羞", "憨笑", "惊恐", "坏笑", "饥饿", "惊讶",
+    "可爱", "愉快", "可怜", "抠鼻", "酷", "快哭了", "困", "冷汗", "流汗", "流泪",
+    "难过", "撇嘴", "敲打", "亲亲", "糗大了", "色", "衰", "睡", "调皮", "偷笑",
+    "吐", "微笑", "委屈", "吓", "嘘", "疑问", "阴险", "右哼哼", "晕", "再见",
+    "折磨", "咒骂", "抓狂", "左哼哼", "骷髅", "猪头", "爱心", "便便", "示爱", "月亮",
+    "蛋糕", "心碎", "拥抱", "炸弹", "闪电",
+}
 
 
 def norm_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def sysprompt_ds_history_stats(text: Any) -> Dict[str, Any]:
+    raw = "" if text is None else str(text)
+    user_count = sum(raw.count(token) for token in DS_USER_TOKENS)
+    assistant_count = sum(raw.count(token) for token in DS_ASSISTANT_TOKENS)
+    return {
+        "sysprompt_ds_history_present": bool(user_count and assistant_count),
+        "sysprompt_ds_user_token_count": user_count,
+        "sysprompt_ds_assistant_token_count": assistant_count,
+        "sysprompt_ds_pair_count": min(user_count, assistant_count),
+    }
+
+
+def merge_speaker_label_lines(lines: List[str]) -> List[str]:
+    merged: List[str] = []
+    i = 0
+    speaker_labels = ("玩家：", "吉莉：")
+    while i < len(lines):
+        line = lines[i]
+        if line in speaker_labels and i + 1 < len(lines):
+            next_line = lines[i + 1]
+            if not next_line.startswith(speaker_labels) and next_line != "【对话历史】":
+                merged.append(line + next_line)
+                i += 2
+                continue
+        merged.append(line)
+        i += 1
+    return merged
 
 
 def clean_dialog_text(text: Any) -> str:
@@ -35,6 +78,7 @@ def clean_dialog_text(text: Any) -> str:
 
 def clean_sysprompt(text: Any) -> str:
     s = "" if text is None else str(text)
+    has_ds_history = bool(s.count(FULLWIDTH_USER) and s.count(FULLWIDTH_ASSISTANT))
     s = s.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
     s = re.sub(r"<think\b[^>]*>.*?</think>", "", s, flags=re.IGNORECASE | re.DOTALL)
 
@@ -57,7 +101,14 @@ def clean_sysprompt(text: Any) -> str:
     s = re.sub(r"\[/?INST\]|<<SYS>>|<</SYS>>", " ", s, flags=re.IGNORECASE)
 
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in s.split("\n")]
-    return "\n".join(line for line in lines if line).strip()
+    lines = [line for line in lines if line]
+    lines = merge_speaker_label_lines(lines)
+    if has_ds_history and "【对话历史】" not in lines:
+        for i, line in enumerate(lines):
+            if line.startswith(("玩家：", "吉莉：")):
+                lines.insert(i, "【对话历史】")
+                break
+    return "\n".join(lines).strip()
 
 
 def safe_id(raw: Any, idx: int) -> str:
@@ -214,6 +265,27 @@ def category_values(obj: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def split_csv_values(text: str) -> List[str]:
+    return [item.strip() for item in str(text or "").split(",") if item.strip()]
+
+
+def matches_excluded_category(obj: Dict[str, Any], excluded_categories: List[str]) -> bool:
+    if not excluded_categories:
+        return False
+    vals = category_values(obj)
+    categories = [vals["meta_category"], vals["top_category"], vals["raw_category"]]
+    return any(category in excluded_categories for category in categories if category)
+
+
+def contains_paren_emote(text: str, emotes: set[str]) -> bool:
+    if not text or not emotes:
+        return False
+    for match in re.finditer(r"[（(]([^（）()]{1,12})[）)]", text):
+        if match.group(1).strip() in emotes:
+            return True
+    return False
+
+
 def matches_category(obj: Dict[str, Any], mode: str, contains: str) -> bool:
     vals = category_values(obj)
     meta_category = vals["meta_category"]
@@ -248,6 +320,7 @@ def build_example(
     max_question_chars: int,
     max_answer_chars: int,
     max_turns: int,
+    exclude_paren_emotes: set[str],
 ) -> Tuple[Dict[str, Any] | None, str]:
     current_q, q_source = query_from_obj(obj)
     current_a = answer_from_obj(obj)
@@ -255,6 +328,8 @@ def build_example(
         return None, "missing_query"
     if not current_a:
         return None, "missing_answer"
+    if contains_paren_emote(current_a, exclude_paren_emotes):
+        return None, "paren_emote_answer"
     if len(current_q) < min_question_chars:
         return None, "question_too_short"
     if max_question_chars > 0 and len(current_q) > max_question_chars:
@@ -265,6 +340,8 @@ def build_example(
     pairs = history_pairs(obj.get("history"))
     turns: List[Dict[str, Any]] = []
     for user, assistant in pairs:
+        if contains_paren_emote(assistant, exclude_paren_emotes):
+            return None, "paren_emote_history_answer"
         if max_question_chars > 0 and len(user) > max_question_chars:
             continue
         if max_answer_chars > 0 and len(assistant) > max_answer_chars:
@@ -296,7 +373,9 @@ def build_example(
 
     vals = category_values(obj)
     meta_info = obj.get("meta_info") if isinstance(obj.get("meta_info"), dict) else {}
+    raw_system = obj.get("system", "")
     sysprompt, reference_text_appended = build_sysprompt(obj, include_reference)
+    sysprompt_ds_stats = sysprompt_ds_history_stats(raw_system)
     sid = safe_id(obj.get("hash_str") or obj.get("hash_key") or obj.get("id"), idx)
     answer_char_max = max(len(t["answer_text"]) for t in turns)
     question_char_max = max(len(t["question_text"]) for t in turns)
@@ -335,6 +414,7 @@ def build_example(
             "usage_scene": vals["usage_scene"],
             "reference_text_present": bool(meta_info.get("reference_text")),
             "reference_text_appended": bool(reference_text_appended),
+            **sysprompt_ds_stats,
             "config": obj.get("config"),
             "user_profile": obj.get("user_profile"),
         },
@@ -347,8 +427,11 @@ def main() -> None:
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--stats_out", default="")
-    ap.add_argument("--category_mode", choices=["game_state", "state", "all", "contains"], default="game_state")
+    ap.add_argument("--category_mode", choices=["game_state", "state", "all", "contains"], default="all")
     ap.add_argument("--category_contains", default="")
+    ap.add_argument("--exclude_categories", default=",".join(DEFAULT_EXCLUDE_CATEGORIES))
+    ap.add_argument("--disable_paren_emote_filter", action="store_true")
+    ap.add_argument("--paren_emotes", default=",".join(sorted(DEFAULT_PAREN_EMOTES)))
     ap.add_argument("--include_reference", action="store_true", help="Deprecated no-op; sysprompt uses system only")
     ap.add_argument("--min_question_chars", type=int, default=1)
     ap.add_argument("--max_question_chars", type=int, default=240)
@@ -371,12 +454,19 @@ def main() -> None:
     seen_ids = set()
     duplicate_ids = 0
     read_n = wrote_n = 0
+    excluded_categories = split_csv_values(args.exclude_categories)
+    paren_emotes = set(split_csv_values(args.paren_emotes))
+    if args.disable_paren_emote_filter:
+        paren_emotes = set()
 
     with out_path.open("w", encoding="utf-8") as fw:
         for read_n, obj in enumerate(iter_input_objects(in_path), start=1):
             counters["read"] += 1
             if not matches_category(obj, args.category_mode, args.category_contains):
                 counters["skip_category"] += 1
+                continue
+            if matches_excluded_category(obj, excluded_categories):
+                counters["skip_excluded_category"] += 1
                 continue
             ex, reason = build_example(
                 obj,
@@ -387,6 +477,7 @@ def main() -> None:
                 max_question_chars=args.max_question_chars,
                 max_answer_chars=args.max_answer_chars,
                 max_turns=args.max_turns,
+                exclude_paren_emotes=paren_emotes,
             )
             if ex is None:
                 counters[f"skip_{reason}"] += 1
@@ -412,6 +503,7 @@ def main() -> None:
             counters["can_interrupt_donor"] += int(bool(ex["selection"]["can_interrupt_donor"]))
             counters["can_incomplete_query"] += int(bool(ex["selection"]["can_incomplete_query"]))
             counters["with_sysprompt"] += int(bool(ex["sysprompt"]))
+            counters["with_sysprompt_ds_history"] += int(bool(meta.get("sysprompt_ds_history_present")))
             counters["with_reference_text"] += int(bool(meta["reference_text_present"]))
             counters["with_reference_text_appended"] += int(bool(meta["reference_text_appended"]))
 
@@ -430,6 +522,11 @@ def main() -> None:
         "wrote": wrote_n,
         "duplicate_ids": duplicate_ids,
         "args": vars(args),
+        "effective_filters": {
+            "excluded_categories": excluded_categories,
+            "paren_emote_filter_enabled": bool(paren_emotes),
+            "paren_emote_count": len(paren_emotes),
+        },
         "counters": dict(counters),
         "query_source_counts": dict(query_source_counts.most_common()),
         "turn_count_hist": dict(turn_count_hist.most_common()),
