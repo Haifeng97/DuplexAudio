@@ -102,7 +102,7 @@ def choose_evenly(rows: List[Dict[str, Any]], count: int, rng: random.Random) ->
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build an ESD voice_bank.jsonl with balanced speakers and configured emotion ratios.")
-    ap.add_argument("--parquet_glob", default="/mnt/c/Users/hf/Downloads/train-*-of-00007.parquet")
+    ap.add_argument("--parquet_glob", default="/data/haifengjia/datasets/esd/train-*-of-00007.parquet")
     ap.add_argument("--out_dir", default="outputs/esd_voice_bank_zh_neutral60")
     ap.add_argument("--speakers", default="1-10")
     ap.add_argument("--language", default="zh")

@@ -61,7 +61,18 @@ def mock_tts(text: str, out: Path, sample_rate: int) -> None:
     write_wav_pcm16(out, samples, sample_rate)
 
 
-def run_cosyvoice(tasks: List[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
+def append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def progress_line(done: int, total: int, ok: int, errors: int, cached: int) -> str:
+    pct = (100.0 * done / total) if total else 100.0
+    return f"[overall] {done}/{total} ({pct:.2f}%) ok={ok} cached={cached} errors={errors}"
+
+
+def run_cosyvoice(tasks: List[Dict[str, Any]], args: argparse.Namespace, result_path: Path) -> List[Dict[str, Any]]:
     sys.path.insert(0, args.cosyvoice_repo)
     sys.path.insert(0, str(Path(args.cosyvoice_repo) / "third_party" / "Matcha-TTS"))
     from cosyvoice.cli.cosyvoice import AutoModel  # type: ignore
@@ -69,30 +80,36 @@ def run_cosyvoice(tasks: List[Dict[str, Any]], args: argparse.Namespace) -> List
 
     model = AutoModel(model_dir=args.model_dir)
     results = []
+    ok = errors = cached = 0
     for i, task in enumerate(tasks, start=1):
         out = Path(task["out"])
         if out.exists() and out.stat().st_size > 1000 and not args.overwrite:
-            results.append({"id": task["id"], "status": "cached", "out": str(out)})
-            continue
-        out.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            last = None
-            ref_text = prep_ref_text(str(task.get("ref_text", "")), args.model_dir)
-            for last in model.inference_zero_shot(
-                task["text"],
-                ref_text,
-                task["ref_wav"],
-                stream=False,
-            ):
-                pass
-            if last is None:
-                raise RuntimeError("CosyVoice returned no audio")
-            torchaudio.save(str(out), last["tts_speech"].cpu(), model.sample_rate)
-            results.append({"id": task["id"], "status": "ok", "out": str(out), "sample_rate": model.sample_rate})
-        except Exception as exc:
-            results.append({"id": task["id"], "status": "error", "out": str(out), "error": repr(exc)})
-        if args.progress_every and i % args.progress_every == 0:
-            print(json.dumps({"done": i, "total": len(tasks)}, ensure_ascii=False), flush=True)
+            row = {"id": task["id"], "status": "cached", "out": str(out)}
+            cached += 1
+        else:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                last = None
+                ref_text = prep_ref_text(str(task.get("ref_text", "")), args.model_dir)
+                for last in model.inference_zero_shot(
+                    task["text"],
+                    ref_text,
+                    task["ref_wav"],
+                    stream=False,
+                ):
+                    pass
+                if last is None:
+                    raise RuntimeError("CosyVoice returned no audio")
+                torchaudio.save(str(out), last["tts_speech"].cpu(), model.sample_rate)
+                row = {"id": task["id"], "status": "ok", "out": str(out), "sample_rate": model.sample_rate}
+                ok += 1
+            except Exception as exc:
+                row = {"id": task["id"], "status": "error", "out": str(out), "error": repr(exc)}
+                errors += 1
+        results.append(row)
+        append_jsonl(result_path, row)
+        if args.progress_every and (i % args.progress_every == 0 or i == len(tasks)):
+            print(progress_line(i, len(tasks), ok, errors, cached), flush=True)
     return results
 
 
@@ -110,25 +127,34 @@ def main() -> None:
 
     tasks_path = Path(args.tasks)
     tasks = read_jsonl(tasks_path)
+    result_path = Path(args.results) if args.results else tasks_path.with_name("tts_results.jsonl")
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    if result_path.exists():
+        result_path.unlink()
+
     if args.mock_tts:
         results = []
+        ok = errors = cached = 0
         for i, task in enumerate(tasks, start=1):
             out = Path(task["out"])
             if out.exists() and out.stat().st_size > 1000 and not args.overwrite:
-                results.append({"id": task["id"], "status": "cached", "out": str(out)})
+                row = {"id": task["id"], "status": "cached", "out": str(out)}
+                cached += 1
             else:
-                mock_tts(str(task["text"]), out, args.sample_rate)
-                results.append({"id": task["id"], "status": "mock_ok", "out": str(out), "sample_rate": args.sample_rate})
-            if args.progress_every and i % args.progress_every == 0:
-                print(json.dumps({"done": i, "total": len(tasks)}, ensure_ascii=False), flush=True)
+                try:
+                    mock_tts(str(task["text"]), out, args.sample_rate)
+                    row = {"id": task["id"], "status": "mock_ok", "out": str(out), "sample_rate": args.sample_rate}
+                    ok += 1
+                except Exception as exc:
+                    row = {"id": task["id"], "status": "error", "out": str(out), "error": repr(exc)}
+                    errors += 1
+            results.append(row)
+            append_jsonl(result_path, row)
+            if args.progress_every and (i % args.progress_every == 0 or i == len(tasks)):
+                print(progress_line(i, len(tasks), ok, errors, cached), flush=True)
     else:
-        results = run_cosyvoice(tasks, args)
+        results = run_cosyvoice(tasks, args, result_path)
 
-    result_path = Path(args.results) if args.results else tasks_path.with_name("tts_results.jsonl")
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    with result_path.open("w", encoding="utf-8") as f:
-        for row in results:
-            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
     ok = sum(1 for row in results if row.get("status") in {"ok", "mock_ok", "cached"})
     print(json.dumps({
         "tasks": len(tasks),

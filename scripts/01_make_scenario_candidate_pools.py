@@ -363,7 +363,8 @@ def main() -> None:
     rng.shuffle(backchannel_pool)
     rng.shuffle(incomplete_pool)
 
-    normal_rows = [normal_candidate(r, args.chunk_ms) for r in normal_pool[: args.limit_each]]
+    limit_each = args.limit_each if args.limit_each > 0 else None
+    normal_rows = [normal_candidate(r, args.chunk_ms) for r in normal_pool[:limit_each]]
 
     interrupt_rows = []
     if args.interrupt_pair_mode == "same_row_previous":
@@ -375,10 +376,10 @@ def main() -> None:
             cand = same_row_interrupt_candidate(row, prefix_chars)
             if cand is not None:
                 interrupt_rows.append(cand)
-            if len(interrupt_rows) >= args.limit_each:
+            if limit_each is not None and len(interrupt_rows) >= limit_each:
                 break
     else:
-        pair_count = min(args.limit_each, len(interrupt_base_pool), len(interrupt_donor_pool))
+        pair_count = min(limit_each or min(len(interrupt_base_pool), len(interrupt_donor_pool)), len(interrupt_base_pool), len(interrupt_donor_pool))
         for i in range(pair_count):
             base = interrupt_base_pool[i]
             donor = interrupt_donor_pool[-(i + 1)]
@@ -399,7 +400,7 @@ def main() -> None:
         prefix_chars = rng.randint(1, max(1, max_prefix))
         backchannel_text = templates[len(backchannel_rows) % len(templates)]
         backchannel_rows.append(backchannel_candidate(row, backchannel_text, prefix_chars, args.chunk_ms))
-        if len(backchannel_rows) >= args.limit_each:
+        if limit_each is not None and len(backchannel_rows) >= limit_each:
             break
 
     incomplete_rows = []
@@ -407,7 +408,7 @@ def main() -> None:
         cand = incomplete_candidate(row, rng, args.min_incomplete_prefix_chars)
         if cand is not None:
             incomplete_rows.append(cand)
-        if len(incomplete_rows) >= args.limit_each:
+        if limit_each is not None and len(incomplete_rows) >= limit_each:
             break
 
     counts = {

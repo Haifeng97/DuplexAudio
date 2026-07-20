@@ -287,7 +287,16 @@ def text_entry(idx: int, token: Dict[str, Any], text_idx: int, chunk_n: int, chu
 
 
 class Builder:
-    def __init__(self, sample_rate: int, chunk_ms: int, noise_rms: float, seed: int, tokenizer: TextTokenizer, vad: VadSilenceReplacer):
+    def __init__(
+        self,
+        sample_rate: int,
+        chunk_ms: int,
+        noise_rms: float,
+        seed: int,
+        tokenizer: TextTokenizer,
+        vad: VadSilenceReplacer,
+        min_query_audio_sec: float,
+    ):
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
         self.chunk_n = int(round(sample_rate * chunk_ms / 1000.0))
@@ -295,6 +304,7 @@ class Builder:
         self.rng = random.Random(seed)
         self.tokenizer = tokenizer
         self.vad = vad
+        self.min_query_audio_sec = min_query_audio_sec
         self.audio: List[int] = []
         self.timeline: List[Dict[str, Any]] = []
         self.query_vad: List[Dict[str, Any]] = []
@@ -310,6 +320,13 @@ class Builder:
 
     def add_query_audio(self, path: str, turn_id: int, source: str, *, first_label: str = "WAIT") -> None:
         samples = read_wav_mono_pcm16(Path(path), self.sample_rate)
+        duration_sec = len(samples) / self.sample_rate if self.sample_rate else 0.0
+        if self.min_query_audio_sec > 0 and duration_sec < self.min_query_audio_sec:
+            raise ValueError(
+                f"query_audio_too_short path={path} "
+                f"duration_sec={duration_sec:.6f} "
+                f"min_query_audio_sec={self.min_query_audio_sec:.6f}"
+            )
         samples, vad_meta = self.vad.process(samples, self.rng)
         vad_meta.update({"path": path, "source": source, "turn_id": turn_id})
         chunks = int(math.ceil(len(samples) / self.chunk_n)) if samples else 0
@@ -383,7 +400,15 @@ def stable_seed(text: str) -> int:
 
 
 def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
-    b = Builder(args.sample_rate, args.chunk_ms, args.noise_rms, stable_seed(row["id"]), args.text_tokenizer, args.vad_processor)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
     turns = row.get("turns") or [{"question_text": row["question_text"], "answer_text": row["answer_text"]}]
@@ -397,7 +422,15 @@ def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -
 
 
 def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
-    b = Builder(args.sample_rate, args.chunk_ms, args.noise_rms, stable_seed(row["id"]), args.text_tokenizer, args.vad_processor)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
     b.add_query_audio(assets["base_query"]["audio"], 1, "base_query_audio")
@@ -411,7 +444,15 @@ def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace
 
 
 def build_backchannel(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
-    b = Builder(args.sample_rate, args.chunk_ms, args.noise_rms, stable_seed(row["id"]), args.text_tokenizer, args.vad_processor)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
     b.add_query_audio(assets["query"]["audio"], 1, "query_audio")
@@ -432,7 +473,15 @@ def build_backchannel(row: Dict[str, Any], out_wav: Path, args: argparse.Namespa
 
 
 def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
-    b = Builder(args.sample_rate, args.chunk_ms, args.noise_rms, stable_seed(row["id"]), args.text_tokenizer, args.vad_processor)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
     b.add_query_audio(assets["query_part1"]["audio"], 1, "query_part1_audio")
@@ -478,6 +527,16 @@ def common_manifest(row: Dict[str, Any], out_wav: Path, b: Builder, scenario: st
     }
 
 
+def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+            n += 1
+    return n
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Format duplex scenario index into wav + timeline manifest.")
     ap.add_argument("--index", required=True, help="scenario_index.jsonl from 02_make_turn_tts_tasks.py")
@@ -492,6 +551,7 @@ def main() -> None:
     ap.add_argument("--final_idle_chunks", type=int, default=2)
     ap.add_argument("--tokenizer_json", default="tokenizers/qwen3_8b/tokenizer.json")
     ap.add_argument("--vad_mode", choices=["silero", "auto", "energy", "off"], default="silero")
+    ap.add_argument("--min_query_audio_sec", type=float, default=1.0, help="Skip a sample if any required query wav is shorter than this; 0 disables.")
     args = ap.parse_args()
 
     tokenizer_json = Path(args.tokenizer_json) if args.tokenizer_json else None
@@ -513,16 +573,45 @@ def main() -> None:
         "incomplete_query_candidate": build_incomplete,
     }
     n = 0
+    skipped: List[Dict[str, Any]] = []
     with out_path.open("w", encoding="utf-8") as f:
         for row in rows:
             scenario = row.get("scenario")
             if scenario not in builders:
+                skipped.append({
+                    "id": row.get("id"),
+                    "scenario": scenario,
+                    "error": "unsupported_scenario",
+                })
                 continue
             out_wav = wav_dir / f"{row['id']}.wav"
-            manifest = builders[scenario](row, out_wav, args)
+            try:
+                manifest = builders[scenario](row, out_wav, args)
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "id": row.get("id"),
+                    "scenario": scenario,
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                })
+                continue
             f.write(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
             n += 1
-    print(json.dumps({"index": args.index, "out": str(out_path), "wav_dir": str(wav_dir), "n": n}, ensure_ascii=False, indent=2))
+    skipped_path = out_path.with_suffix(out_path.suffix + ".skipped.jsonl")
+    stats_path = out_path.with_suffix(out_path.suffix + ".stats.json")
+    if skipped:
+        write_jsonl(skipped_path, skipped)
+    stats = {
+        "index": args.index,
+        "out": str(out_path),
+        "wav_dir": str(wav_dir),
+        "input_rows": len(rows),
+        "n": n,
+        "skipped": len(skipped),
+        "skipped_path": str(skipped_path) if skipped else "",
+    }
+    stats_path.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

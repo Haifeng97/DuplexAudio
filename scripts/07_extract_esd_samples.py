@@ -122,7 +122,7 @@ audio{width:260px}
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Extract small ESD wav samples by speaker/emotion.")
-    ap.add_argument("--parquet_glob", default="/mnt/c/Users/hf/Downloads/train-*-of-00007.parquet")
+    ap.add_argument("--parquet_glob", default="/data/haifengjia/datasets/esd/train-*-of-00007.parquet")
     ap.add_argument("--out_dir", default="outputs/esd_samples_zh")
     ap.add_argument("--speakers", default="1-10")
     ap.add_argument("--language", default="zh")
