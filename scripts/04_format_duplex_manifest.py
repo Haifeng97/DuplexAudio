@@ -10,6 +10,8 @@ import random
 import struct
 import wave
 from pathlib import Path
+
+from tqdm import tqdm
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -575,7 +577,8 @@ def main() -> None:
     n = 0
     skipped: List[Dict[str, Any]] = []
     with out_path.open("w", encoding="utf-8") as f:
-        for row in rows:
+        progress = tqdm(rows, total=len(rows), dynamic_ncols=True, unit="row", desc=f"format {out_path.parent.name}")
+        for row in progress:
             scenario = row.get("scenario")
             if scenario not in builders:
                 skipped.append({
@@ -583,6 +586,7 @@ def main() -> None:
                     "scenario": scenario,
                     "error": "unsupported_scenario",
                 })
+                progress.set_postfix(written=n, skipped=len(skipped), refresh=False)
                 continue
             out_wav = wav_dir / f"{row['id']}.wav"
             try:
@@ -594,9 +598,12 @@ def main() -> None:
                     "error": type(exc).__name__,
                     "message": str(exc),
                 })
+                progress.set_postfix(written=n, skipped=len(skipped), refresh=False)
                 continue
             f.write(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
             n += 1
+            if n % 100 == 0:
+                progress.set_postfix(written=n, skipped=len(skipped), refresh=False)
     skipped_path = out_path.with_suffix(out_path.suffix + ".skipped.jsonl")
     stats_path = out_path.with_suffix(out_path.suffix + ".stats.json")
     if skipped:

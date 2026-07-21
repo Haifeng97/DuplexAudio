@@ -173,12 +173,14 @@ class AppState:
         return self.manifests[key]
 
 
-def discover_manifests(explicit: List[str]) -> List[Path]:
+def discover_manifests(explicit: List[str], *, auto_discover: bool = True) -> List[Path]:
     found: List[Path] = []
     for value in explicit:
         path = resolve_project_path(value)
         if path.is_file() and path not in found:
             found.append(path)
+    if not auto_discover:
+        return found
     patterns = [
         "outputs/pipeline_real_*_20/manifest.jsonl",
         "outputs/pipeline_mock_*_200/manifest.jsonl",
@@ -412,9 +414,10 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--manifest", action="append", default=[], help="Manifest JSONL path. Can be passed multiple times.")
+    parser.add_argument("--no_discover", action="store_true", help="Only load manifests passed with --manifest; do not scan outputs/**/manifest.jsonl.")
     args = parser.parse_args()
 
-    manifests = discover_manifests(args.manifest)
+    manifests = discover_manifests(args.manifest, auto_discover=not args.no_discover)
     if not manifests:
         raise SystemExit("No manifest.jsonl files found under outputs/.")
     global APP
