@@ -171,21 +171,36 @@ class VadSilenceReplacer:
         self._silero_get_speech_timestamps = get_speech_timestamps
         self.backend = "silero"
 
-    def process(self, samples: List[int], rng: random.Random) -> Tuple[List[int], Dict[str, Any]]:
+    def process(self, samples: List[int], rng: random.Random, *, trim_silence: bool = False) -> Tuple[List[int], Dict[str, Any]]:
+        sample_count = len(samples)
         if self.backend == "off" or not samples:
-            return samples, self._meta(len(samples), None, None)
+            if trim_silence:
+                raise ValueError(f"query_audio_no_speech sample_count={sample_count} vad_backend={self.backend}")
+            return samples, self._meta(sample_count, None, None)
         if self.backend == "silero":
             start, end = self._silero_bounds(samples)
         else:
             start, end = self._energy_bounds(samples)
         if start is None or end is None or start >= end:
-            return samples, self._meta(len(samples), None, None)
+            if trim_silence:
+                raise ValueError(f"query_audio_no_speech sample_count={sample_count} vad_backend={self.backend}")
+            return samples, self._meta(sample_count, None, None)
+        if trim_silence:
+            trimmed = samples[start:end]
+            return trimmed, self._meta(
+                sample_count,
+                start,
+                end,
+                processed_count=len(trimmed),
+                trim_silence_requested=True,
+                trim_applied=True,
+            )
         replaced = list(samples)
         if start > 0:
             replaced[:start] = gaussian_noise_samples(start, rng, self.noise_rms)
         if end < len(replaced):
             replaced[end:] = gaussian_noise_samples(len(replaced) - end, rng, self.noise_rms)
-        return replaced, self._meta(len(samples), start, end)
+        return replaced, self._meta(sample_count, start, end)
 
     def _silero_bounds(self, samples: List[int]) -> Tuple[Optional[int], Optional[int]]:
         assert self._silero_get_speech_timestamps is not None
@@ -238,7 +253,17 @@ class VadSilenceReplacer:
         end = min(len(samples), (voiced[-1] + 1) * frame_n)
         return start, end
 
-    def _meta(self, sample_count: int, start: Optional[int], end: Optional[int]) -> Dict[str, Any]:
+    def _meta(
+        self,
+        sample_count: int,
+        start: Optional[int],
+        end: Optional[int],
+        *,
+        processed_count: Optional[int] = None,
+        trim_silence_requested: bool = False,
+        trim_applied: bool = False,
+    ) -> Dict[str, Any]:
+        processed_count = sample_count if processed_count is None else processed_count
         leading = start if start is not None else 0
         trailing = sample_count - end if end is not None else 0
         return {
@@ -247,8 +272,18 @@ class VadSilenceReplacer:
             "vad_sample_rate": self.vad_sample_rate if self.backend == "silero" else self.sample_rate,
             "speech_start_sample": start,
             "speech_end_sample": end,
-            "leading_replaced_sec": round(leading / self.sample_rate, 6),
-            "trailing_replaced_sec": round(trailing / self.sample_rate, 6),
+            "original_sample_count": sample_count,
+            "processed_sample_count": processed_count,
+            "original_duration_sec": round(sample_count / self.sample_rate, 6),
+            "processed_duration_sec": round(processed_count / self.sample_rate, 6),
+            "trim_silence_requested": trim_silence_requested,
+            "trim_applied": trim_applied,
+            "trim_start_sample": start if trim_applied else None,
+            "trim_end_sample": end if trim_applied else None,
+            "leading_trimmed_sec": round(leading / self.sample_rate, 6) if trim_applied else 0.0,
+            "trailing_trimmed_sec": round(trailing / self.sample_rate, 6) if trim_applied else 0.0,
+            "leading_replaced_sec": 0.0 if trim_applied else round(leading / self.sample_rate, 6),
+            "trailing_replaced_sec": 0.0 if trim_applied else round(trailing / self.sample_rate, 6),
         }
 
     def metadata(self) -> Dict[str, Any]:
@@ -320,7 +355,7 @@ class Builder:
         for _ in range(chunks):
             self.timeline.append(entry(self.idx(), label, kind, self.chunk_n, self.chunk_ms, source, turn_id))
 
-    def add_query_audio(self, path: str, turn_id: int, source: str, *, first_label: str = "WAIT") -> None:
+    def add_query_audio(self, path: str, turn_id: int, source: str, *, first_label: str = "WAIT", trim_silence: bool = False) -> None:
         samples = read_wav_mono_pcm16(Path(path), self.sample_rate)
         duration_sec = len(samples) / self.sample_rate if self.sample_rate else 0.0
         if self.min_query_audio_sec > 0 and duration_sec < self.min_query_audio_sec:
@@ -329,7 +364,14 @@ class Builder:
                 f"duration_sec={duration_sec:.6f} "
                 f"min_query_audio_sec={self.min_query_audio_sec:.6f}"
             )
-        samples, vad_meta = self.vad.process(samples, self.rng)
+        samples, vad_meta = self.vad.process(samples, self.rng, trim_silence=trim_silence)
+        processed_duration_sec = len(samples) / self.sample_rate if self.sample_rate else 0.0
+        if self.min_query_audio_sec > 0 and processed_duration_sec < self.min_query_audio_sec:
+            raise ValueError(
+                f"query_audio_too_short_after_vad path={path} "
+                f"duration_sec={processed_duration_sec:.6f} "
+                f"min_query_audio_sec={self.min_query_audio_sec:.6f}"
+            )
         vad_meta.update({"path": path, "source": source, "turn_id": turn_id})
         chunks = int(math.ceil(len(samples) / self.chunk_n)) if samples else 0
         need = chunks * self.chunk_n
@@ -416,7 +458,7 @@ def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -
     turns = row.get("turns") or [{"question_text": row["question_text"], "answer_text": row["answer_text"]}]
     for i, turn in enumerate(turns, start=1):
         key = "query" if len(turns) == 1 else f"turn{i:03d}_query"
-        b.add_query_audio(assets[key]["audio"], i, f"turn{i}_query_audio")
+        b.add_query_audio(assets[key]["audio"], i, f"turn{i}_query_audio", trim_silence=True)
         b.add_answer(turn["answer_text"], i, f"turn{i}_answer_gn", min_chunks=b.answer_region_chunks(turn["answer_text"]))
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
@@ -435,9 +477,9 @@ def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace
     )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
-    b.add_query_audio(assets["base_query"]["audio"], 1, "base_query_audio")
+    b.add_query_audio(assets["base_query"]["audio"], 1, "base_query_audio", trim_silence=True)
     b.add_answer(row["base"]["answer_prefix_text"], 1, "base_answer_prefix_gn", prefix_only=True)
-    b.add_query_audio(assets["donor_query"]["audio"], 2, "donor_query_audio", first_label="INTERRUPT")
+    b.add_query_audio(assets["donor_query"]["audio"], 2, "donor_query_audio", first_label="INTERRUPT", trim_silence=True)
     donor_answer = row["donor"]["answer_text"]
     b.add_answer(donor_answer, 2, "donor_answer_gn", min_chunks=b.answer_region_chunks(donor_answer))
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
@@ -486,10 +528,10 @@ def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespac
     )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
-    b.add_query_audio(assets["query_part1"]["audio"], 1, "query_part1_audio")
+    b.add_query_audio(assets["query_part1"]["audio"], 1, "query_part1_audio", trim_silence=True)
     between_chunks = max(1, int(round(float(row["gn_policy"]["between_query_parts_sec"]) * 1000.0 / args.chunk_ms)))
     b.add_noise(between_chunks, "WAIT", "incomplete_pause_wait", "gn_between_query_parts", 1)
-    b.add_query_audio(assets["query_part2"]["audio"], 1, "query_part2_audio")
+    b.add_query_audio(assets["query_part2"]["audio"], 1, "query_part2_audio", trim_silence=True)
     answer = row["answer_text_if_complete"]
     b.add_answer(answer, 1, "answer_gn", min_chunks=b.answer_region_chunks(answer))
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")

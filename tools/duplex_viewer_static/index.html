@@ -192,8 +192,6 @@
     .btn:hover { border-color: #536276; background: #242d3b; }
     .time-readout { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; margin-left: auto; }
     canvas {
-      width: 100%;
-      height: 132px;
       background: #0d1219;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -201,17 +199,104 @@
       cursor: crosshair;
       touch-action: none;
     }
+    .timeline-scroll {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1219;
+      padding: 10px;
+    }
+    .timeline-track {
+      min-width: 100%;
+    }
+    .axis-canvas {
+      width: auto;
+      height: 132px;
+      max-width: none;
+    }
+    #timeAxis {
+      height: 34px;
+      cursor: default;
+    }
+    #wave { margin-top: 8px; }
     #mel {
       height: 220px;
       margin-top: 10px;
     }
     #mel.is-hidden { display: none; }
+    .chunk-axis {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #0f141b;
+    }
+    .chunk-row {
+      display: flex;
+      min-height: 92px;
+      border-top: 1px solid rgba(255,255,255,.06);
+    }
+    .chunk-row:first-child { border-top: 0; }
+    .chunk-cell {
+      flex: 0 0 auto;
+      width: var(--chunk-px);
+      min-width: var(--chunk-px);
+      max-width: var(--chunk-px);
+      border: 0;
+      border-right: 1px solid rgba(255,255,255,.08);
+      display: grid;
+      place-items: center;
+      padding: 8px 3px;
+      font-size: 12px;
+      line-height: 1.05;
+      font-weight: 400;
+      color: #f4f8ff;
+      overflow: hidden;
+      white-space: normal;
+      text-align: center;
+      text-overflow: clip;
+      text-shadow: 0 1px 1px rgba(0,0,0,.35);
+      cursor: pointer;
+      position: relative;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.055), inset 0 -14px 24px rgba(0,0,0,.16);
+    }
+    .chunk-cell:hover { filter: brightness(1.12); }
+    .chunk-cell.token { font-family: inherit; }
+    .chunk-label {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      display: block;
+      max-height: calc(100% - 10px);
+      max-width: calc(100% - 6px);
+      overflow: hidden;
+      writing-mode: vertical-rl;
+      text-orientation: upright;
+      transform: translate(-50%, -50%);
+      transform-origin: center;
+    }
+    .chunk-cell.ascii .chunk-label {
+      width: max-content;
+      max-width: none;
+      max-height: none;
+      writing-mode: horizontal-tb;
+      text-orientation: mixed;
+      white-space: nowrap;
+      transform: translate(-50%, -50%) rotate(-90deg);
+    }
+    .chunk-cell.idle { background: linear-gradient(180deg, rgba(132,141,154,.68), rgba(85,93,107,.58)); color: #eef3fa; }
+    .chunk-cell.wait { background: linear-gradient(180deg, rgba(80,156,255,.86), rgba(39,114,216,.78)); }
+    .chunk-cell.answer { background: linear-gradient(180deg, rgba(66,202,128,.84), rgba(35,158,88,.76)); }
+    .chunk-cell.text { background: linear-gradient(180deg, rgba(198,132,255,.86), rgba(152,88,226,.78)); }
+    .chunk-cell.eor { background: linear-gradient(180deg, rgba(255,119,119,.88), rgba(218,74,74,.8)); }
+    .chunk-cell.active { box-shadow: inset 0 0 0 2px #fff, 0 0 0 1px rgba(255,255,255,.35); }
     .timeline-wrap {
-      overflow: auto;
+      margin-top: 10px;
+      overflow: visible;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #0d1219;
-      max-height: 410px;
+      max-height: none;
       position: relative;
     }
     .timeline {
@@ -459,7 +544,7 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 18, loadSeq: 0, waveformError: '', audioAbort: null };
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
     const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
 
     function fmtSec(v) {
@@ -564,6 +649,7 @@
         state.item = await api(`/api/item?manifest=${state.manifestKey}&index=${index}`);
         if (seq !== state.loadSeq) return;
         state.activeIdx = -1;
+        state.autoFollow = true;
         state.waveformError = '';
         renderItem();
         drawWaveform(0);
@@ -610,7 +696,8 @@
                 <button class="btn" id="prevChunk">上一片</button>
                 <button class="btn" id="nextChunk">下一片</button>
                 <button class="btn" id="playChunk">播放当前片</button>
-                <label class="pill">Zoom <input id="zoom" type="range" min="8" max="54" value="${state.zoom}" style="width:120px"></label>
+                <button class="btn" id="exportTimeline">导出图片</button>
+                <label class="pill">Zoom <input id="zoom" type="range" min="14" max="96" value="${state.zoom}" style="width:120px"></label>
                 <span class="time-readout" id="timeReadout">0.00s</span>
               </div>
             </div>
@@ -642,21 +729,21 @@
                 <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
-                <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>å¡çš„è¯å¯ä»¥å…³</span></label>
+                <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>卡的话可以关</span></label>
               </div>
             </div>
             <div class="panel-body">
-              <canvas id="wave" width="1600" height="220"></canvas>
-              <canvas id="mel" class="${state.melEnabled ? '' : 'is-hidden'}" width="1600" height="320"></canvas>
+              <div class="timeline-scroll" id="timelineScroll">
+                <div class="timeline-track" id="timelineTrack">
+                  <canvas id="timeAxis" class="axis-canvas" width="1600" height="34"></canvas>
+                  <canvas id="wave" class="axis-canvas" width="1600" height="220"></canvas>
+                  <canvas id="mel" class="axis-canvas ${state.melEnabled ? '' : 'is-hidden'}" width="1600" height="320"></canvas>
+                  <div id="chunkAxis" class="chunk-axis"></div>
+                  <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
+                </div>
+              </div>
               <div id="waveformNotice"></div>
-              <div style="height:10px"></div>
-              <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
             </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head"><div class="panel-title">Token 序列</div><span class="pill">点击可 seek</span></div>
-            <div class="panel-body"><div class="token-strip">${tokenStrip(row.timeline || [])}</div></div>
           </section>
 
           <section class="panel">
@@ -712,7 +799,8 @@
       $('prevChunk').onclick = () => seekChunk(Math.max(0, state.activeIdx - 1));
       $('nextChunk').onclick = () => seekChunk(Math.min((state.item.timeline || []).length - 1, state.activeIdx + 1));
       $('playChunk').onclick = () => playChunk(state.activeIdx);
-      $('zoom').oninput = (e) => { state.zoom = Number(e.target.value); renderTimeline(); updateActive(state.activeIdx); };
+      $('exportTimeline').onclick = () => exportTimelineImage();
+      $('zoom').oninput = (e) => { state.zoom = Number(e.target.value); renderTimeline(); updateActive(state.activeIdx); drawWaveform($('audio')?.currentTime || 0); drawMelSpectrogram($('audio')?.currentTime || 0); };
       bindSeekCanvas($('wave'));
       bindSeekCanvas($('mel'));
       $('melToggle').onchange = (e) => {
@@ -726,11 +814,142 @@
           state.audioAbort?.abort();
         }
       };
+      bindTimelineScrollControl();
       document.querySelectorAll('[data-idx]').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
+    }
+    function timelineWidth() {
+      const chunks = (state.item?.timeline || []).length;
+      const viewport = $('timelineScroll')?.clientWidth || 800;
+      return Math.max(viewport - 24, chunks * state.zoom);
+    }
+    function bindTimelineScrollControl() {
+      const scroller = $('timelineScroll');
+      if (!scroller || scroller.dataset.boundFollow === '1') return;
+      scroller.dataset.boundFollow = '1';
+      const stopFollow = () => { state.autoFollow = false; };
+      scroller.addEventListener('pointerdown', stopFollow);
+      scroller.addEventListener('wheel', stopFollow, { passive: true });
+      scroller.addEventListener('scroll', () => {
+        if (!state.programmaticScroll) state.autoFollow = false;
+      }, { passive: true });
+    }
+    function autoScrollToActive(idx) {
+      const scroller = $('timelineScroll');
+      const audio = $('audio');
+      if (!scroller || !audio || audio.paused || !state.autoFollow) return;
+      const center = idx * state.zoom + state.zoom / 2;
+      const leftEdge = scroller.scrollLeft + scroller.clientWidth * 0.32;
+      const rightEdge = scroller.scrollLeft + scroller.clientWidth * 0.68;
+      if (center >= leftEdge && center <= rightEdge) return;
+      const maxLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      const nextLeft = Math.max(0, Math.min(maxLeft, center - scroller.clientWidth * 0.45));
+      state.programmaticScroll = true;
+      scroller.scrollTo({ left: nextLeft, behavior: 'auto' });
+      window.setTimeout(() => { state.programmaticScroll = false; }, 80);
+    }
+    function setAxisCanvasSize(canvas, cssWidth, cssHeight) {
+      if (!canvas) return;
+      const dpr = 1;
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+      const bw = Math.max(1, Math.round(cssWidth * dpr));
+      const bh = Math.max(1, Math.round(cssHeight * dpr));
+      if (canvas.width !== bw) canvas.width = bw;
+      if (canvas.height !== bh) canvas.height = bh;
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function syncAxisSizes() {
+      const width = timelineWidth();
+      const track = $('timelineTrack');
+      if (track) track.style.width = `${width}px`;
+      setAxisCanvasSize($('timeAxis'), width, 34);
+      setAxisCanvasSize($('wave'), width, 132);
+      setAxisCanvasSize($('mel'), width, 220);
+      const axis = $('chunkAxis');
+      if (axis) axis.style.width = `${width}px`;
+      return width;
+    }
+    function timeTickStep(durationSec, width) {
+      const minPx = 74;
+      const candidates = [0.5, 1, 2, 5, 10, 15, 30, 60];
+      for (const step of candidates) {
+        if ((step / Math.max(durationSec, 0.001)) * width >= minPx) return step;
+      }
+      return 120;
+    }
+    function drawTimeAxisCanvas(canvas, width, height) {
+      if (!canvas || !state.item) return;
+      const ctx = canvas.getContext('2d');
+      const duration = state.item?.stats?.duration_sec || 0;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#0d1219';
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(255,255,255,.16)';
+      ctx.beginPath();
+      ctx.moveTo(0, height - .5);
+      ctx.lineTo(width, height - .5);
+      ctx.stroke();
+      if (!duration) return;
+      const step = timeTickStep(duration, width);
+      const minorStep = step >= 1 ? step / 2 : step;
+      ctx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      for (let t = 0; t <= duration + 1e-6; t += minorStep) {
+        const major = Math.abs(t / step - Math.round(t / step)) < 1e-5;
+        const x = t / duration * width;
+        ctx.strokeStyle = major ? 'rgba(255,255,255,.38)' : 'rgba(255,255,255,.16)';
+        ctx.beginPath();
+        ctx.moveTo(x + .5, major ? 8 : 17);
+        ctx.lineTo(x + .5, height);
+        ctx.stroke();
+        if (major) {
+          const label = step < 1 ? `${t.toFixed(1)}s` : `${Math.round(t)}s`;
+          ctx.fillStyle = 'rgba(237,242,247,.78)';
+          ctx.fillText(label, Math.min(width - 34, x + 4), 5);
+        }
+      }
+    }
+    function drawTimeAxis() {
+      const canvas = $('timeAxis');
+      if (!canvas) return;
+      drawTimeAxisCanvas(canvas, canvas.width, canvas.height);
+    }
+    function chunkClass(ent) {
+      if (!ent) return 'idle';
+      if (ent.label === 'WAIT') return 'wait';
+      if (ent.label === 'IDLE') return 'idle';
+      if (ent.label === 'ANSWER') return 'answer';
+      if (ent.label === '<EOR>') return 'eor';
+      if (ent.label_type === 'text') return 'text';
+      return 'text';
+    }
+    function chunkText(ent) {
+      if (!ent) return '';
+      return ent.token_text || ent.label || '';
+    }
+    function isAsciiText(text) {
+      return /^[\x00-\x7F]+$/.test(String(text || ''));
+    }
+    function renderChunkAxis(width) {
+      const tl = state.item?.timeline || [];
+      const px = state.zoom;
+      const html = `<div class="chunk-row" style="--chunk-px:${px}px;width:${width}px">` +
+        tl.map(ent => {
+          const txt = chunkText(ent);
+          const label = ent.label_type === 'text' ? 'TEXT' : (ent.label || '');
+          const ascii = isAsciiText(txt) ? ' ascii' : '';
+          return `<button class="chunk-cell token ${chunkClass(ent)}${ascii}" data-idx="${ent.idx}" data-label="${esc(label)}" title="chunk ${ent.idx} ${esc(ent.start_sec)}-${esc(ent.end_sec)} ${esc(ent.kind)} ${esc(ent.audio_source)} ${esc(ent.token_text || ent.label)}"><span class="chunk-label">${esc(txt)}</span></button>`;
+        }).join('') + '</div>';
+      const axis = $('chunkAxis');
+      if (axis) axis.innerHTML = html;
     }
     function renderTimeline() {
       const row = state.item, tl = row.timeline || [], groups = row._viewer.timeline_groups || [];
-      const px = state.zoom, width = Math.max(800, tl.length * px + 100);
+      const px = state.zoom, width = syncAxisSizes();
+      drawTimeAxis();
+      renderChunkAxis(width);
       const lanes = ['state', 'text', 'audio_source', 'turn'];
       const html = [`<div class="cursor" id="cursor"></div>`];
       for (let s = 0; s <= Math.ceil((row.stats.duration_sec || 0)); s++) {
@@ -748,7 +967,7 @@
       });
       $('timeline').style.width = width + 86 + 'px';
       $('timeline').innerHTML = html.join('');
-      document.querySelectorAll('.seg').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
+      document.querySelectorAll('.seg, .chunk-cell').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
     }
     function segmentClass(g, lane) {
       if (lane === 'audio_source') return String(g.audio_source || '').startsWith('gn') || String(g.audio_source || '').includes('_gn') ? 'gn idle' : 'wait';
@@ -805,7 +1024,7 @@
     function drawWaveform(currentTime = 0) {
       const c = $('wave');
       if (!c) return;
-      const ctx = c.getContext('2d'), w = c.width, h = c.height;
+      const ctx = c.getContext('2d'), w = c.clientWidth || c.width, h = c.clientHeight || c.height;
       ctx.clearRect(0,0,w,h);
       ctx.fillStyle = '#0d1219'; ctx.fillRect(0,0,w,h);
       const tl = state.item?.timeline || [], duration = state.item?.stats?.duration_sec || 1;
@@ -933,7 +1152,7 @@
     function drawMelStatus(message, progress = 0) {
       const c = $('mel');
       if (!c || !state.melEnabled) return;
-      const ctx = c.getContext('2d'), w = c.width, h = c.height;
+      const ctx = c.getContext('2d'), w = c.clientWidth || c.width, h = c.clientHeight || c.height;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#0d1219';
       ctx.fillRect(0, 0, w, h);
@@ -979,7 +1198,7 @@
       if (!state.melEnabled) return;
       const c = $('mel');
       if (!c) return;
-      const ctx = c.getContext('2d'), w = c.width, h = c.height;
+      const ctx = c.getContext('2d'), w = c.clientWidth || c.width, h = c.clientHeight || c.height;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#0d1219';
       ctx.fillRect(0, 0, w, h);
@@ -1046,6 +1265,7 @@
     function updateActive(idx) {
       const tl = state.item?.timeline || [];
       idx = Math.max(0, Math.min(tl.length - 1, idx || 0));
+      const prevIdx = state.activeIdx;
       state.activeIdx = idx;
       const ent = tl[idx] || {};
       $('timeReadout') && ($('timeReadout').textContent = `${fmtSec(ent.start_sec)} / ${fmtSec(state.item.stats.duration_sec)} · chunk ${idx}`);
@@ -1055,6 +1275,7 @@
       document.querySelectorAll('tr[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
       const detail = $('chunkDetail');
       if (detail) detail.innerHTML = Object.entries(ent).map(([k,v]) => `<div class="k">${esc(k)}</div><div class="mono">${esc(v)}</div>`).join('');
+      if (idx !== prevIdx) autoScrollToActive(idx);
     }
     function updateCursor(timeSec) {
       const cursor = $('cursor');
@@ -1125,6 +1346,80 @@
           clearInterval(timer);
         }
       }, 20);
+    }
+    function drawVerticalExportText(ctx, text, x, y, w, h) {
+      if (!text || w < 12) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 1, y + 1, Math.max(1, w - 2), Math.max(1, h - 2));
+      ctx.clip();
+      ctx.fillStyle = '#f7fbff';
+      ctx.font = '12px system-ui, -apple-system, Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if (isAsciiText(text)) {
+        ctx.translate(x + w / 2, y + h / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(text, 0, 0, Math.max(1, h - 12));
+      } else {
+        const chars = Array.from(text);
+        const step = 13;
+        const maxChars = Math.max(1, Math.floor((h - 10) / step));
+        const visible = chars.slice(0, maxChars);
+        const totalH = Math.max(0, (visible.length - 1) * step);
+        const startY = y + h / 2 - totalH / 2;
+        visible.forEach((ch, i) => {
+          ctx.fillText(ch, x + w / 2, startY + i * step);
+        });
+      }
+      ctx.restore();
+    }
+    function drawExportTokenRow(ctx, tl, width, y, rowH, px) {
+      ctx.save();
+      tl.forEach(ent => {
+        const x = ent.idx * px;
+        const cls = chunkClass(ent);
+        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(235,87,87,.86)' : 'rgba(111,119,133,.58)';
+        const w = Math.max(1, px - 1);
+        const grad = ctx.createLinearGradient(x, y, x, y + rowH);
+        grad.addColorStop(0, fill);
+        grad.addColorStop(1, 'rgba(13,18,25,.28)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, w, rowH - 1);
+        ctx.strokeStyle = 'rgba(255,255,255,.08)';
+        ctx.strokeRect(x + .5, y + .5, Math.max(1, w - 1), rowH - 2);
+        drawVerticalExportText(ctx, chunkText(ent), x, y, w, rowH - 1);
+      });
+      ctx.restore();
+    }
+    function exportTimelineImage() {
+      if (!state.item) return;
+      const tl = state.item.timeline || [];
+      const px = state.zoom;
+      const width = Math.max(tl.length * px, timelineWidth());
+      const timeAxis = $('timeAxis'), wave = $('wave'), mel = $('mel');
+      const timeH = 34, waveH = 132, melH = state.melEnabled ? 220 : 0, tokenH = 92, gap = 10;
+      const height = timeH + 8 + waveH + gap + melH + (melH ? gap : 0) + tokenH;
+      const out = document.createElement('canvas');
+      out.width = width;
+      out.height = height;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#0d1219';
+      ctx.fillRect(0, 0, width, height);
+      if (timeAxis) ctx.drawImage(timeAxis, 0, 0, width, timeH);
+      let y = timeH + 8;
+      ctx.drawImage(wave, 0, y, width, waveH);
+      y += waveH + gap;
+      if (melH) {
+        ctx.drawImage(mel, 0, y, width, melH);
+        y += melH + gap;
+      }
+      drawExportTokenRow(ctx, tl, width, y, tokenH, px);
+      const a = document.createElement('a');
+      const id = String(state.item.id || 'sample').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80);
+      a.download = `duplex_timeline_${id}.png`;
+      a.href = out.toDataURL('image/png');
+      a.click();
     }
     function debounce(fn, ms) {
       let t;
