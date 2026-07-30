@@ -211,6 +211,36 @@ def add_task(
     }
 
 
+def find_turn_index(turns: List[Dict[str, Any]], turn_id: Any, default: int) -> int:
+    for i, turn in enumerate(turns):
+        if isinstance(turn, dict) and turn.get("turn_id") == turn_id:
+            return i
+    return default
+
+
+def add_turn_query_task(
+    tasks: List[Dict[str, Any]],
+    assets: Dict[str, Any],
+    *,
+    sample_id: str,
+    key: str,
+    turn: Dict[str, Any],
+    wav_dir: Path,
+    picker: VoicePicker,
+    tts_text_punct: bool,
+) -> None:
+    add_task(
+        tasks,
+        assets,
+        sample_id=sample_id,
+        key=key,
+        text=str(turn.get("question_text", "")),
+        wav_dir=wav_dir,
+        voice=picker.pick(sample_id, key),
+        tts_text_punct=tts_text_punct,
+    )
+
+
 def attach_assets(
     row: Dict[str, Any],
     wav_dir: Path,
@@ -224,7 +254,7 @@ def attach_assets(
     scenario = out.get("scenario")
     assets: Dict[str, Any] = {}
 
-    if scenario == "normal_qa":
+    if scenario in {"normal_qa", "incomplete_query_clarification"}:
         turns = out.get("turns")
         if isinstance(turns, list) and len(turns) > 1:
             for idx, turn in enumerate(turns, start=1):
@@ -240,7 +270,7 @@ def attach_assets(
                         voice=picker.pick(sample_id, key),
                         tts_text_punct=tts_text_punct,
                     )
-        else:
+        elif scenario == "normal_qa":
             add_task(
                 tasks,
                 assets,
@@ -251,7 +281,41 @@ def attach_assets(
                 voice=picker.pick(sample_id, "query"),
                 tts_text_punct=tts_text_punct,
             )
+        else:
+            for idx, turn in enumerate(turns or [], start=1):
+                if isinstance(turn, dict) and turn.get("needs_tts", True):
+                    key = f"turn{idx:03d}_query"
+                    add_task(
+                        tasks,
+                        assets,
+                        sample_id=sample_id,
+                        key=key,
+                        text=str(turn.get("question_text", "")),
+                        wav_dir=wav_dir,
+                        voice=picker.pick(sample_id, key),
+                        tts_text_punct=tts_text_punct,
+                    )
     elif scenario == "player_interrupts_ai":
+        turns = [t for t in (out.get("turns") or []) if isinstance(t, dict)]
+        base_idx = find_turn_index(turns, out.get("base", {}).get("turn_id"), max(0, len(turns) - 2)) if turns else -1
+        donor_idx = find_turn_index(turns, out.get("donor", {}).get("turn_id"), max(0, len(turns) - 1)) if turns else -1
+        if turns and donor_idx <= base_idx:
+            base_idx = max(0, len(turns) - 2)
+            donor_idx = max(0, len(turns) - 1)
+        for idx, turn in enumerate(turns):
+            if idx in {base_idx, donor_idx}:
+                continue
+            if turn.get("needs_tts", True):
+                add_turn_query_task(
+                    tasks,
+                    assets,
+                    sample_id=sample_id,
+                    key=f"turn{idx + 1:03d}_query",
+                    turn=turn,
+                    wav_dir=wav_dir,
+                    picker=picker,
+                    tts_text_punct=tts_text_punct,
+                )
         add_task(
             tasks,
             assets,
@@ -294,6 +358,24 @@ def attach_assets(
             tts_text_punct=tts_text_punct,
         )
     elif scenario == "incomplete_query_candidate":
+        turns = [t for t in (out.get("turns") or []) if isinstance(t, dict)]
+        special_idx = int(out.get("incomplete_turn_index") or 0) - 1
+        if turns and not (0 <= special_idx < len(turns)):
+            special_idx = find_turn_index(turns, out.get("incomplete_turn_id"), len(turns) - 1)
+        for idx, turn in enumerate(turns):
+            if idx == special_idx:
+                continue
+            if turn.get("needs_tts", True):
+                add_turn_query_task(
+                    tasks,
+                    assets,
+                    sample_id=sample_id,
+                    key=f"turn{idx + 1:03d}_query",
+                    turn=turn,
+                    wav_dir=wav_dir,
+                    picker=picker,
+                    tts_text_punct=tts_text_punct,
+                )
         add_task(
             tasks,
             assets,

@@ -2,11 +2,12 @@
 
 这个项目用于把现有文本 SFT 数据转换成“全双工对话状态管理”训练数据。输出数据包含玩家 query 的 TTS 音频、拼接后的高斯噪声区域、以及按固定 chunk 对齐的 timeline 标签。
 
-当前主要覆盖三类场景：
+当前主要覆盖四类场景：
 
-- `normal_qa`：正常问答。玩家说完 query 后，模型输出 `ANSWER`、回复 token、`<EOR>`，再回到 `IDLE`。
-- `incomplete_query`：玩家 query 被切成前后两段，中间插入短高斯噪声。玩家说完整句前 timeline 一直是 `WAIT`。
-- `player_interrupts_ai`：只使用原始数据里真正 `history` 非空的多轮 case。后一轮玩家 query 打断前一轮 AI 未说完的回复，打断开始的第一个 token 标为 `INTERRUPT`。
+- `normal_qa`：正常问答。玩家说完 query 后，模型输出 `ANSWER`、回复 token、`<EOR>`，再回到 `IDLE`。如果原始数据是多轮，完整轮次之间会在 `<EOR>` 后插入 1-3 秒随机底噪 `IDLE`。
+- `incomplete_query`：玩家 query 被切成前后两段，中间插入短高斯噪声。玩家说完整句前 timeline 一直是 `WAIT`。如果原始数据是多轮，会保留特殊不完整轮前后的完整轮，并只在完整轮边界插入 1-3 秒随机底噪 `IDLE`；不完整 query 内部不额外插入该 idle。
+- `incomplete_query_clarification`：把一轮“玩家半句 query + AI 追问/确认回复”插入原对话；LLM 只生成追问回复，半句 query 来自原 query 截断。
+- `player_interrupts_ai`：只使用原始数据里真正 `history` 非空的多轮 case。后一轮玩家 query 打断前一轮 AI 未说完的回复，打断开始的第一个 token 标为 `INTERRUPT`。如果打断 pair 前后还有完整原始轮次，完整轮边界会插入 1-3 秒随机底噪 `IDLE`；base answer prefix 和 interrupt query 之间不插该 idle。
 
 `sysprompt` 里的对话历史只作为上下文，不参与训练，也不能用于构造 interrupt。清洗后会整理成：
 
@@ -28,6 +29,8 @@ scripts/05_validate_duplex_manifest.py     校验 manifest 和音频长度是否
 scripts/06_mix_duplex_manifest.py          后续用于混合不同场景比例
 scripts/07_extract_esd_samples.py          从 ESD parquet 抽参考音频
 scripts/08_build_esd_voice_bank.py         构建 ESD voice bank
+scripts/09_export_incomplete_clarification_requests.py 导出半句 query 追问回复的 LLM 请求列表
+scripts/10_build_incomplete_clarification_scenarios.py 用 LLM 回复生成 clarification 场景 index
 
 configs/esd_voice_tts.yaml                 TTS 参考音频配置
 tokenizers/qwen3_8b/tokenizer.json         Qwen3-8B tokenizer
@@ -118,6 +121,22 @@ python scripts/04_format_duplex_manifest.py \
   --vad_mode silero
 ```
 
+可选：生成 incomplete query clarification 的 LLM 请求列表，然后用填好的回复构建场景 index：
+
+```bash
+python scripts/09_export_incomplete_clarification_requests.py \
+  --input outputs/pipeline_normal/scenario_index.jsonl \
+  --out outputs/incomplete_clarification/llm_requests.jsonl \
+  --limit 1000 \
+  --seed 20260722
+
+python scripts/10_build_incomplete_clarification_scenarios.py \
+  --input outputs/incomplete_clarification/llm_requests_filled.jsonl \
+  --out outputs/incomplete_clarification/candidates.jsonl
+```
+
+之后对 `outputs/incomplete_clarification/candidates.jsonl` 继续跑 `02_make_turn_tts_tasks.py`、TTS 和 `04_format_duplex_manifest.py`。
+
 第六步，校验：
 
 ```bash
@@ -132,6 +151,9 @@ python scripts/05_validate_duplex_manifest.py \
 - 去掉 category 为 `以游戏为中心-基于状态的闲聊-决策问答` 的数据。
 - 去掉 answer 或 history answer 中含中文括号表情的数据。
 - `normal` 和 `incomplete` 可以使用所有筛选后的可用 rows。
+- 原始多轮样本会在完整轮次之间插入 1-3 秒随机底噪 `IDLE`。
+- `incomplete_query` 的 split query 内部、`interrupt` 的 base answer prefix 到 interrupt query 中间，不套用完整轮间 idle 规则。
+- `incomplete_query_clarification` 由半句 query 和 LLM 生成的追问回复组成，可以插入单轮前或多轮中间。
 - `interrupt` 只能使用原始 `history` 非空、转换后 `turns >= 2` 的 rows。
 - `sysprompt` 里的历史只作为 system 上下文，不参与训练，不用于 interrupt。
 

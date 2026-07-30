@@ -345,6 +345,7 @@ class Builder:
         self.audio: List[int] = []
         self.timeline: List[Dict[str, Any]] = []
         self.query_vad: List[Dict[str, Any]] = []
+        self.inter_turn_idle: List[Dict[str, Any]] = []
 
     def idx(self) -> int:
         return len(self.timeline)
@@ -439,8 +440,50 @@ def add_initial_idle(b: Builder, args: argparse.Namespace) -> None:
     b.add_noise(chunks, "IDLE", "initial_idle", "gn_before")
 
 
+def row_has_original_history(row: Dict[str, Any]) -> bool:
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    if int(meta.get("history_turn_count") or 0) > 0:
+        return True
+    turns = row.get("turns")
+    return isinstance(turns, list) and any(isinstance(t, dict) and t.get("source") == "history" for t in turns)
+
+
+def add_inter_turn_idle(b: Builder, args: argparse.Namespace, row: Dict[str, Any], prev_turn_id: int, next_turn_id: int) -> None:
+    if args.disable_inter_turn_idle or not (row_has_original_history(row) or row.get("force_inter_turn_idle")):
+        return
+    chunks = random_duration_chunks(b.rng, args.inter_turn_idle_sec_min, args.inter_turn_idle_sec_max, args.chunk_ms)
+    source = f"gn_between_turn{prev_turn_id}_turn{next_turn_id}"
+    b.add_noise(chunks, "IDLE", "between_turn_idle", source, prev_turn_id)
+    b.inter_turn_idle.append({
+        "after_turn_id": prev_turn_id,
+        "before_turn_id": next_turn_id,
+        "chunks": chunks,
+        "duration_sec": round(chunks * args.chunk_ms / 1000.0, 6),
+        "range_sec": [args.inter_turn_idle_sec_min, args.inter_turn_idle_sec_max],
+        "audio_source": source,
+    })
+
+
 def stable_seed(text: str) -> int:
     return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], 16) % (2**31)
+
+
+def find_turn_index(turns: List[Dict[str, Any]], turn_id: Any, default: int) -> int:
+    for i, turn in enumerate(turns):
+        if isinstance(turn, dict) and turn.get("turn_id") == turn_id:
+            return i
+    return default
+
+
+def turn_query_asset_key(turns: List[Dict[str, Any]], idx: int) -> str:
+    return "query" if len(turns) == 1 else f"turn{idx + 1:03d}_query"
+
+
+def add_complete_turn(b: Builder, assets: Dict[str, Any], turn: Dict[str, Any], local_idx: int, key: str) -> None:
+    turn_id = local_idx + 1
+    b.add_query_audio(assets[key]["audio"], turn_id, f"turn{turn_id}_query_audio", trim_silence=True)
+    answer_text = str(turn.get("answer_text", ""))
+    b.add_answer(answer_text, turn_id, f"turn{turn_id}_answer_gn", min_chunks=b.answer_region_chunks(answer_text))
 
 
 def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
@@ -456,13 +499,41 @@ def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -
     add_initial_idle(b, args)
     assets = row["tts_assets"]
     turns = row.get("turns") or [{"question_text": row["question_text"], "answer_text": row["answer_text"]}]
-    for i, turn in enumerate(turns, start=1):
-        key = "query" if len(turns) == 1 else f"turn{i:03d}_query"
-        b.add_query_audio(assets[key]["audio"], i, f"turn{i}_query_audio", trim_silence=True)
-        b.add_answer(turn["answer_text"], i, f"turn{i}_answer_gn", min_chunks=b.answer_region_chunks(turn["answer_text"]))
+    for idx, turn in enumerate(turns):
+        add_complete_turn(b, assets, turn, idx, turn_query_asset_key(turns, idx))
+        if idx + 1 < len(turns):
+            add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "normal_qa")
+
+
+def build_incomplete_clarification(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
+    add_initial_idle(b, args)
+    assets = row["tts_assets"]
+    turns = row.get("turns") or []
+    if not turns:
+        raise ValueError("incomplete_query_clarification requires non-empty turns")
+    for idx, turn in enumerate(turns):
+        key = f"turn{idx + 1:03d}_query"
+        turn_id = idx + 1
+        b.add_query_audio(assets[key]["audio"], turn_id, f"turn{turn_id}_query_audio", trim_silence=True)
+        answer_text = str(turn.get("answer_text", ""))
+        b.add_answer(answer_text, turn_id, f"turn{turn_id}_answer_gn", min_chunks=b.answer_region_chunks(answer_text))
+        if idx + 1 < len(turns):
+            add_inter_turn_idle(b, args, row, turn_id, turn_id + 1)
+    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    write_wav_pcm16(out_wav, b.audio, args.sample_rate)
+    return common_manifest(row, out_wav, b, "incomplete_query_clarification")
 
 
 def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
@@ -477,11 +548,35 @@ def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace
     )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
-    b.add_query_audio(assets["base_query"]["audio"], 1, "base_query_audio", trim_silence=True)
-    b.add_answer(row["base"]["answer_prefix_text"], 1, "base_answer_prefix_gn", prefix_only=True)
-    b.add_query_audio(assets["donor_query"]["audio"], 2, "donor_query_audio", first_label="INTERRUPT", trim_silence=True)
+    turns = [t for t in (row.get("turns") or []) if isinstance(t, dict)]
+    if not turns:
+        turns = [row.get("base", {}), row.get("donor", {})]
+    base_idx = find_turn_index(turns, row.get("base", {}).get("turn_id"), max(0, len(turns) - 2))
+    donor_idx = find_turn_index(turns, row.get("donor", {}).get("turn_id"), max(0, len(turns) - 1))
+    if donor_idx <= base_idx:
+        base_idx = max(0, len(turns) - 2)
+        donor_idx = max(0, len(turns) - 1)
+
+    for idx in range(0, base_idx):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
+    base_turn_id = base_idx + 1
+    b.add_query_audio(assets["base_query"]["audio"], base_turn_id, "base_query_audio", trim_silence=True)
+    b.add_answer(row["base"]["answer_prefix_text"], base_turn_id, "base_answer_prefix_gn", prefix_only=True)
+
+    donor_turn_id = donor_idx + 1
+    b.add_query_audio(assets["donor_query"]["audio"], donor_turn_id, "donor_query_audio", first_label="INTERRUPT", trim_silence=True)
     donor_answer = row["donor"]["answer_text"]
-    b.add_answer(donor_answer, 2, "donor_answer_gn", min_chunks=b.answer_region_chunks(donor_answer))
+    b.add_answer(donor_answer, donor_turn_id, "donor_answer_gn", min_chunks=b.answer_region_chunks(donor_answer))
+
+    if donor_idx + 1 < len(turns):
+        add_inter_turn_idle(b, args, row, donor_turn_id, donor_turn_id + 1)
+    for idx in range(donor_idx + 1, len(turns)):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        if idx + 1 < len(turns):
+            add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "player_interrupts_ai")
@@ -528,12 +623,33 @@ def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespac
     )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
-    b.add_query_audio(assets["query_part1"]["audio"], 1, "query_part1_audio", trim_silence=True)
+    turns = [t for t in (row.get("turns") or []) if isinstance(t, dict)]
+    special_idx = int(row.get("incomplete_turn_index") or 0) - 1
+    if turns and not (0 <= special_idx < len(turns)):
+        special_idx = find_turn_index(turns, row.get("incomplete_turn_id"), len(turns) - 1)
+    if not turns:
+        turns = [{"turn_id": 1, "question_text": row.get("full_question_text", ""), "answer_text": row.get("answer_text_if_complete", "")}]
+        special_idx = 0
+
+    for idx in range(0, special_idx):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
+    special_turn_id = special_idx + 1
+    b.add_query_audio(assets["query_part1"]["audio"], special_turn_id, "query_part1_audio", trim_silence=True)
     between_chunks = max(1, int(round(float(row["gn_policy"]["between_query_parts_sec"]) * 1000.0 / args.chunk_ms)))
-    b.add_noise(between_chunks, "WAIT", "incomplete_pause_wait", "gn_between_query_parts", 1)
-    b.add_query_audio(assets["query_part2"]["audio"], 1, "query_part2_audio", trim_silence=True)
+    b.add_noise(between_chunks, "WAIT", "incomplete_pause_wait", "gn_between_query_parts", special_turn_id)
+    b.add_query_audio(assets["query_part2"]["audio"], special_turn_id, "query_part2_audio", trim_silence=True)
     answer = row["answer_text_if_complete"]
-    b.add_answer(answer, 1, "answer_gn", min_chunks=b.answer_region_chunks(answer))
+    b.add_answer(answer, special_turn_id, "answer_gn", min_chunks=b.answer_region_chunks(answer))
+
+    if special_idx + 1 < len(turns):
+        add_inter_turn_idle(b, args, row, special_turn_id, special_turn_id + 1)
+    for idx in range(special_idx + 1, len(turns)):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        if idx + 1 < len(turns):
+            add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
     b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "incomplete_query")
@@ -562,6 +678,7 @@ def common_manifest(row: Dict[str, Any], out_wav: Path, b: Builder, scenario: st
         "tokenizer": b.tokenizer.metadata(),
         "vad": b.vad.metadata(),
         "query_vad": b.query_vad,
+        "inter_turn_idle": b.inter_turn_idle,
         "stats": {
             "timeline_chunks": len(b.timeline),
             "audio_samples": len(b.audio),
@@ -593,6 +710,9 @@ def main() -> None:
     ap.add_argument("--initial_idle_sec_min", type=float, default=0.5)
     ap.add_argument("--initial_idle_sec_max", type=float, default=1.5)
     ap.add_argument("--final_idle_chunks", type=int, default=2)
+    ap.add_argument("--inter_turn_idle_sec_min", type=float, default=1.0, help="Random IDLE floor inserted after EOR between original multi-turn dialogue turns.")
+    ap.add_argument("--inter_turn_idle_sec_max", type=float, default=3.0, help="Random IDLE ceiling inserted after EOR between original multi-turn dialogue turns.")
+    ap.add_argument("--disable_inter_turn_idle", action="store_true", help="Disable random IDLE between original multi-turn dialogue turns.")
     ap.add_argument("--tokenizer_json", default="tokenizers/qwen3_8b/tokenizer.json")
     ap.add_argument("--vad_mode", choices=["silero", "auto", "energy", "off"], default="silero")
     ap.add_argument("--min_query_audio_sec", type=float, default=1.0, help="Skip a sample if any required query wav is shorter than this; 0 disables.")
@@ -612,6 +732,7 @@ def main() -> None:
 
     builders = {
         "normal_qa": build_normal,
+        "incomplete_query_clarification": build_incomplete_clarification,
         "player_interrupts_ai": build_interrupt,
         "player_backchannel": build_backchannel,
         "incomplete_query_candidate": build_incomplete,
