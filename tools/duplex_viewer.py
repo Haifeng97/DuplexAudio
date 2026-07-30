@@ -22,6 +22,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "duplex_viewer_static"
 WAVEFORM_CACHE: Dict[Tuple[str, int, int, int], Dict[str, Any]] = {}
+ALLOWED_AUDIO_ROOTS = [
+    ROOT,
+    Path("/nfs/haifengjia"),
+]
 
 
 def compact_text(value: Any, limit: int = 120) -> str:
@@ -209,11 +213,14 @@ def row_audio_path(row: Dict[str, Any]) -> Path:
     audio_path = resolve_project_path(str(row.get("audio") or ""))
     if not audio_path.is_file():
         raise FileNotFoundError(audio_path)
-    try:
-        audio_path.relative_to(ROOT)
-    except ValueError as exc:
-        raise PermissionError(f"audio path outside project root: {audio_path}") from exc
-    return audio_path
+    for root in ALLOWED_AUDIO_ROOTS:
+        try:
+            audio_path.relative_to(root.resolve())
+            return audio_path
+        except ValueError:
+            pass
+    allowed = ", ".join(str(root.resolve()) for root in ALLOWED_AUDIO_ROOTS)
+    raise PermissionError(f"audio path outside allowed roots ({allowed}): {audio_path}")
 
 
 def waveform_payload(audio_path: Path, width: int = 1600) -> Dict[str, Any]:
