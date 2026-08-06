@@ -16,8 +16,12 @@
       --idle: #6f7785;
       --wait: #2f80ed;
       --answer: #27ae60;
+      --f-wait: #e6a23c;
+      --interrupt: #e05260;
+      --continue: #18a89f;
+      --complete: #8b6fd6;
       --text-token: #b76cff;
-      --eor: #eb5757;
+      --eor: #e9793f;
       --gn: #f2c94c;
       --query: #56ccf2;
       --shadow: 0 18px 48px rgba(0, 0, 0, .26);
@@ -233,7 +237,7 @@
     }
     .chunk-row {
       display: flex;
-      min-height: 92px;
+      min-height: 136px;
       border-top: 1px solid rgba(255,255,255,.06);
     }
     .chunk-row:first-child { border-top: 0; }
@@ -287,8 +291,12 @@
     .chunk-cell.idle { background: linear-gradient(180deg, rgba(132,141,154,.68), rgba(85,93,107,.58)); color: #eef3fa; }
     .chunk-cell.wait { background: linear-gradient(180deg, rgba(80,156,255,.86), rgba(39,114,216,.78)); }
     .chunk-cell.answer { background: linear-gradient(180deg, rgba(66,202,128,.84), rgba(35,158,88,.76)); }
+    .chunk-cell.f-wait { background: linear-gradient(180deg, rgba(242,184,86,.88), rgba(207,137,35,.8)); }
+    .chunk-cell.interrupt { background: linear-gradient(180deg, rgba(239,104,116,.9), rgba(194,55,69,.82)); }
+    .chunk-cell.continue { background: linear-gradient(180deg, rgba(50,190,180,.88), rgba(18,139,132,.8)); }
+    .chunk-cell.complete { background: linear-gradient(180deg, rgba(159,126,225,.88), rgba(116,82,190,.8)); }
     .chunk-cell.text { background: linear-gradient(180deg, rgba(198,132,255,.86), rgba(152,88,226,.78)); }
-    .chunk-cell.eor { background: linear-gradient(180deg, rgba(255,119,119,.88), rgba(218,74,74,.8)); }
+    .chunk-cell.eor { background: linear-gradient(180deg, rgba(239,145,75,.9), rgba(204,93,42,.82)); color: #fff8f2; }
     .chunk-cell.active { box-shadow: inset 0 0 0 2px #fff, 0 0 0 1px rgba(255,255,255,.35); }
     .timeline-wrap {
       margin-top: 10px;
@@ -302,7 +310,7 @@
     .timeline {
       position: relative;
       min-height: 210px;
-      padding: 34px 10px 12px 76px;
+      padding: 34px 0 12px 76px;
     }
     .cursor {
       position: absolute;
@@ -352,8 +360,12 @@
     .seg.idle { background: rgba(111,119,133,.42); }
     .seg.wait { background: rgba(47,128,237,.68); }
     .seg.answer { background: rgba(39,174,96,.72); }
+    .seg.f-wait { background: rgba(230,162,60,.74); }
+    .seg.interrupt { background: rgba(224,82,96,.76); }
+    .seg.continue { background: rgba(24,168,159,.74); }
+    .seg.complete { background: rgba(139,111,214,.74); }
     .seg.text { background: rgba(183,108,255,.68); }
-    .seg.eor { background: rgba(235,87,87,.72); }
+    .seg.eor { background: rgba(233,121,63,.76); }
     .seg.gn { outline: 1px solid rgba(242,201,76,.3); }
     .seg.active { box-shadow: 0 0 0 2px #fff inset; }
     .legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
@@ -545,7 +557,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
-    const colors = { IDLE: '#6f7785', WAIT: '#2f80ed', ANSWER: '#27ae60', '<EOR>': '#eb5757' };
+    const TIMELINE_GUTTER = 76;
+    const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<EOR>': '#e9793f' };
 
     function fmtSec(v) {
       const n = Number(v || 0);
@@ -725,8 +738,12 @@
               <div class="panel-title">波形和 Timeline</div>
               <div class="legend">
                 <span><i class="dot" style="background:var(--idle)"></i>IDLE</span>
-                <span><i class="dot" style="background:var(--wait)"></i>WAIT</span>
+                <span><i class="dot" style="background:var(--wait)"></i>D_WAIT</span>
                 <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
+                <span><i class="dot" style="background:var(--f-wait)"></i>F_WAIT</span>
+                <span><i class="dot" style="background:var(--interrupt)"></i>INTERRUPT</span>
+                <span><i class="dot" style="background:var(--continue)"></i>CONTINUE</span>
+                <span><i class="dot" style="background:var(--complete)"></i>COMPLETE</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
                 <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>卡的话可以关</span></label>
@@ -820,7 +837,11 @@
     function timelineWidth() {
       const chunks = (state.item?.timeline || []).length;
       const viewport = $('timelineScroll')?.clientWidth || 800;
-      return Math.max(viewport - 24, chunks * state.zoom);
+      return Math.max(viewport - 24 - TIMELINE_GUTTER, chunks * state.zoom);
+    }
+    function chunkPixelWidth(width = timelineWidth()) {
+      const chunks = (state.item?.timeline || []).length;
+      return chunks ? width / chunks : state.zoom;
     }
     function bindTimelineScrollControl() {
       const scroller = $('timelineScroll');
@@ -837,7 +858,8 @@
       const scroller = $('timelineScroll');
       const audio = $('audio');
       if (!scroller || !audio || audio.paused || !state.autoFollow) return;
-      const center = idx * state.zoom + state.zoom / 2;
+      const px = chunkPixelWidth();
+      const center = TIMELINE_GUTTER + idx * px + px / 2;
       const leftEdge = scroller.scrollLeft + scroller.clientWidth * 0.32;
       const rightEdge = scroller.scrollLeft + scroller.clientWidth * 0.68;
       if (center >= leftEdge && center <= rightEdge) return;
@@ -862,12 +884,19 @@
     function syncAxisSizes() {
       const width = timelineWidth();
       const track = $('timelineTrack');
-      if (track) track.style.width = `${width}px`;
+      if (track) track.style.width = (width + TIMELINE_GUTTER) + 'px';
       setAxisCanvasSize($('timeAxis'), width, 34);
       setAxisCanvasSize($('wave'), width, 132);
       setAxisCanvasSize($('mel'), width, 220);
+      ['timeAxis', 'wave', 'mel'].forEach(id => {
+        const el = $(id);
+        if (el) el.style.marginLeft = TIMELINE_GUTTER + 'px';
+      });
       const axis = $('chunkAxis');
-      if (axis) axis.style.width = `${width}px`;
+      if (axis) {
+        axis.style.width = width + 'px';
+        axis.style.marginLeft = TIMELINE_GUTTER + 'px';
+      }
       return width;
     }
     function timeTickStep(durationSec, width) {
@@ -918,12 +947,16 @@
     }
     function chunkClass(ent) {
       if (!ent) return 'idle';
-      if (ent.label === 'WAIT') return 'wait';
-      if (ent.label === 'IDLE') return 'idle';
-      if (ent.label === 'ANSWER') return 'answer';
+      if (ent.label === 'WAIT' || ent.label === '<FD_D_WAIT>') return 'wait';
+      if (ent.label === 'IDLE' || ent.label === '<FD_IDLE>') return 'idle';
+      if (ent.label === 'ANSWER' || ent.label === '<FD_A_ANSWER>') return 'answer';
+      if (ent.label === '<FD_F_WAIT>') return 'f-wait';
+      if (ent.label === '<FD_G_INTERRUPT>') return 'interrupt';
+      if (ent.label === '<FD_H_CONTINUE>') return 'continue';
+      if (ent.label === '<FD_I_COMPLETE>') return 'complete';
       if (ent.label === '<EOR>') return 'eor';
       if (ent.label_type === 'text') return 'text';
-      return 'text';
+      return 'idle';
     }
     function chunkText(ent) {
       if (!ent) return '';
@@ -934,7 +967,7 @@
     }
     function renderChunkAxis(width) {
       const tl = state.item?.timeline || [];
-      const px = state.zoom;
+      const px = chunkPixelWidth(width);
       const html = `<div class="chunk-row" style="--chunk-px:${px}px;width:${width}px">` +
         tl.map(ent => {
           const txt = chunkText(ent);
@@ -947,13 +980,13 @@
     }
     function renderTimeline() {
       const row = state.item, tl = row.timeline || [], groups = row._viewer.timeline_groups || [];
-      const px = state.zoom, width = syncAxisSizes();
+      const width = syncAxisSizes(), px = chunkPixelWidth(width);
       drawTimeAxis();
       renderChunkAxis(width);
       const lanes = ['state', 'text', 'audio_source', 'turn'];
       const html = [`<div class="cursor" id="cursor"></div>`];
-      for (let s = 0; s <= Math.ceil((row.stats.duration_sec || 0)); s++) {
-        html.push(`<div class="tick" style="left:${76 + s / (row.chunk_ms/1000) * px}px">${s}s</div>`);
+      for (let s = 0; s <= Math.floor((row.stats.duration_sec || 0)); s++) {
+        html.push(`<div class="tick" style="left:${TIMELINE_GUTTER + s / (row.chunk_ms/1000) * px}px">${s}s</div>`);
       }
       lanes.forEach((lane, laneIdx) => {
         html.push(`<div class="lane" style="width:${width}px"><div class="lane-name">${lane}</div>`);
@@ -965,18 +998,22 @@
         });
         html.push('</div>');
       });
-      $('timeline').style.width = width + 86 + 'px';
+      $('timeline').style.width = width + TIMELINE_GUTTER + 'px';
       $('timeline').innerHTML = html.join('');
       document.querySelectorAll('.seg, .chunk-cell').forEach(el => el.addEventListener('click', () => seekChunk(Number(el.dataset.idx))));
     }
     function segmentClass(g, lane) {
       if (lane === 'audio_source') return String(g.audio_source || '').startsWith('gn') || String(g.audio_source || '').includes('_gn') ? 'gn idle' : 'wait';
       if (lane === 'turn') return 'idle';
-      if (g.label === 'WAIT') return 'wait';
-      if (g.label === 'IDLE') return 'idle';
-      if (g.label === 'ANSWER') return 'answer';
+      if (g.label === 'WAIT' || g.label === '<FD_D_WAIT>') return 'wait';
+      if (g.label === 'IDLE' || g.label === '<FD_IDLE>') return 'idle';
+      if (g.label === 'ANSWER' || g.label === '<FD_A_ANSWER>') return 'answer';
+      if (g.label === '<FD_F_WAIT>') return 'f-wait';
+      if (g.label === '<FD_G_INTERRUPT>') return 'interrupt';
+      if (g.label === '<FD_H_CONTINUE>') return 'continue';
+      if (g.label === '<FD_I_COMPLETE>') return 'complete';
       if (g.label === '<EOR>') return 'eor';
-      return 'text';
+      return g.label_type === 'text' ? 'text' : 'idle';
     }
     function renderWaveformNotice() {
       const el = $('waveformNotice');
@@ -1268,9 +1305,10 @@
       const prevIdx = state.activeIdx;
       state.activeIdx = idx;
       const ent = tl[idx] || {};
+      const px = chunkPixelWidth();
       $('timeReadout') && ($('timeReadout').textContent = `${fmtSec(ent.start_sec)} / ${fmtSec(state.item.stats.duration_sec)} · chunk ${idx}`);
       const cursor = $('cursor');
-      if (cursor) cursor.style.left = `${76 + idx * state.zoom}px`;
+      if (cursor) cursor.style.left = `${TIMELINE_GUTTER + idx * px}px`;
       document.querySelectorAll('[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
       document.querySelectorAll('tr[data-idx]').forEach(el => el.classList.toggle('active', Number(el.dataset.idx) === idx));
       const detail = $('chunkDetail');
@@ -1281,9 +1319,10 @@
       const cursor = $('cursor');
       if (!cursor || !state.item) return;
       const chunkSec = state.item.chunk_ms / 1000;
-      const maxX = (state.item.timeline || []).length * state.zoom;
-      const x = Math.max(0, Math.min(maxX, Number(timeSec || 0) / chunkSec * state.zoom));
-      cursor.style.left = `${76 + x}px`;
+      const px = chunkPixelWidth();
+      const maxX = (state.item.timeline || []).length * px;
+      const x = Math.max(0, Math.min(maxX, Number(timeSec || 0) / chunkSec * px));
+      cursor.style.left = `${TIMELINE_GUTTER + x}px`;
     }
     function seekTime(timeSec) {
       if (!state.item) return;
@@ -1379,7 +1418,7 @@
       tl.forEach(ent => {
         const x = ent.idx * px;
         const cls = chunkClass(ent);
-        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(235,87,87,.86)' : 'rgba(111,119,133,.58)';
+        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'f-wait' ? 'rgba(230,162,60,.82)' : cls === 'interrupt' ? 'rgba(224,82,96,.84)' : cls === 'continue' ? 'rgba(24,168,159,.82)' : cls === 'complete' ? 'rgba(139,111,214,.82)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(233,121,63,.84)' : 'rgba(111,119,133,.58)';
         const w = Math.max(1, px - 1);
         const grad = ctx.createLinearGradient(x, y, x, y + rowH);
         grad.addColorStop(0, fill);
@@ -1395,10 +1434,10 @@
     function exportTimelineImage() {
       if (!state.item) return;
       const tl = state.item.timeline || [];
-      const px = state.zoom;
-      const width = Math.max(tl.length * px, timelineWidth());
+      const width = timelineWidth();
+      const px = chunkPixelWidth(width);
       const timeAxis = $('timeAxis'), wave = $('wave'), mel = $('mel');
-      const timeH = 34, waveH = 132, melH = state.melEnabled ? 220 : 0, tokenH = 92, gap = 10;
+      const timeH = 34, waveH = 132, melH = state.melEnabled ? 220 : 0, tokenH = 136, gap = 10;
       const height = timeH + 8 + waveH + gap + melH + (melH ? gap : 0) + tokenH;
       const out = document.createElement('canvas');
       out.width = width;
@@ -1425,6 +1464,13 @@
       let t;
       return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
     }
+    window.addEventListener('resize', debounce(() => {
+      if (!state.item) return;
+      renderTimeline();
+      updateActive(state.activeIdx);
+      drawWaveform($('audio')?.currentTime || 0);
+      drawMelSpectrogram($('audio')?.currentTime || 0);
+    }, 120));
     init().catch(err => {
       console.error(err);
       $('content').innerHTML = `<div class="empty">${esc(err.message)}</div>`;

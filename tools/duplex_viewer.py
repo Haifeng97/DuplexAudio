@@ -25,6 +25,7 @@ WAVEFORM_CACHE: Dict[Tuple[str, int, int, int], Dict[str, Any]] = {}
 ALLOWED_AUDIO_ROOTS = [
     ROOT,
     Path("/nfs/haifengjia"),
+    Path("/nfs/shared_data"),
 ]
 
 
