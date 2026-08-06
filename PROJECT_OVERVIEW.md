@@ -2,12 +2,19 @@
 
 这个项目用于把现有文本 SFT 数据转换成“全双工对话状态管理”训练数据。输出数据包含玩家 query 的 TTS 音频、拼接后的高斯噪声区域、以及按固定 chunk 对齐的 timeline 标签。
 
-当前主要覆盖四类场景：
+固定控制标签及五类 timeline 的唯一规范见
+[`DUPLEX_LABEL_PROTOCOL.md`](DUPLEX_LABEL_PROTOCOL.md)。
 
-- `normal_qa`：正常问答。玩家说完 query 后，模型输出 `ANSWER`、回复 token、`<EOR>`，再回到 `IDLE`。如果原始数据是多轮，完整轮次之间会在 `<EOR>` 后插入 1-3 秒随机底噪 `IDLE`。
-- `incomplete_query`：玩家 query 被切成前后两段，中间插入短高斯噪声。玩家说完整句前 timeline 一直是 `WAIT`。如果原始数据是多轮，会保留特殊不完整轮前后的完整轮，并只在完整轮边界插入 1-3 秒随机底噪 `IDLE`；不完整 query 内部不额外插入该 idle。
-- `incomplete_query_clarification`：把一轮“玩家半句 query + AI 追问/确认回复”插入原对话；LLM 只生成追问回复，半句 query 来自原 query 截断。
-- `player_interrupts_ai`：只使用原始数据里真正 `history` 非空的多轮 case。后一轮玩家 query 打断前一轮 AI 未说完的回复，打断开始的第一个 token 标为 `INTERRUPT`。如果打断 pair 前后还有完整原始轮次，完整轮边界会插入 1-3 秒随机底噪 `IDLE`；base answer prefix 和 interrupt query 之间不插该 idle。
+Roleplay v3 的 Qwen3-TTS、真实 RAMC backchannel 和完整执行命令见
+[`ROLEPLAY_V3_PIPELINE.md`](ROLEPLAY_V3_PIPELINE.md)。
+
+当前主要覆盖五类场景：
+
+- `normal_qa`：正常问答。玩家说话期间输出 `<FD_D_WAIT>`，说完后输出 `<FD_A_ANSWER>`、回复 token、`<EOR>`，再回到 `<FD_IDLE>`。如果原始数据是多轮，完整轮次之间会在 `<EOR>` 后插入 1-3 秒随机底噪 `<FD_IDLE>`。
+- `incomplete_query`：玩家 query 被切成前后两段。前半句最后一个语音 chunk 输出一次 `<FD_F_WAIT>`，中间 0.5-2 秒无语音区间输出 `<FD_IDLE>`，后半句恢复 `<FD_D_WAIT>`。完整 query 后才输出 `<FD_A_ANSWER>`。
+- `incomplete_query_clarification`：把一轮“玩家半句 query + AI 追问/确认回复”插入原对话。半句末尾输出一次 `<FD_F_WAIT>`，随后 3-5 秒随机底噪输出 `<FD_IDLE>`，再触发 `<FD_A_ANSWER>` 和澄清回复。
+- `player_interrupts_ai`：只使用原始数据里真正 `history` 非空的多轮 case。后一轮玩家 query 打断前一轮 AI 未说完的回复，玩家语音首 chunk 输出 `<FD_G_INTERRUPT>`，其余语音输出 `<FD_D_WAIT>`；旧回复不输出 `<EOR>`。
+- `player_backchannel`：AI 回复中玩家插入真实短反馈音频。首 chunk 输出 `<FD_G_INTERRUPT>`，其余语音输出 `<FD_D_WAIT>`；AI 继续原回复前依次输出 `<FD_H_CONTINUE>`、`<FD_A_ANSWER>`。
 
 `sysprompt` 里的对话历史只作为上下文，不参与训练，也不能用于构造 interrupt。清洗后会整理成：
 
@@ -31,6 +38,11 @@ scripts/07_extract_esd_samples.py          从 ESD parquet 抽参考音频
 scripts/08_build_esd_voice_bank.py         构建 ESD voice bank
 scripts/09_export_incomplete_clarification_requests.py 导出半句 query 追问回复的 LLM 请求列表
 scripts/10_build_incomplete_clarification_scenarios.py 用 LLM 回复生成 clarification 场景 index
+scripts/16_extract_magicdata_backchannels.py 提取真实高频 backchannel
+scripts/17_select_roleplay_scenario_mix.py  在 TTS 前按比例分配场景
+scripts/18_concat_duplex_manifests.py       无二次抽样地拼接最终 manifest
+scripts/19_upgrade_manifest_with_backchannel.py 给旧成品增加 backchannel
+scripts/20_upgrade_manifest_label_protocol.py  把旧成品升级到 fd_control_v1
 
 configs/esd_voice_tts.yaml                 TTS 参考音频配置
 tokenizers/qwen3_8b/tokenizer.json         Qwen3-8B tokenizer
@@ -151,7 +163,7 @@ python scripts/05_validate_duplex_manifest.py \
 - 去掉 category 为 `以游戏为中心-基于状态的闲聊-决策问答` 的数据。
 - 去掉 answer 或 history answer 中含中文括号表情的数据。
 - `normal` 和 `incomplete` 可以使用所有筛选后的可用 rows。
-- 原始多轮样本会在完整轮次之间插入 1-3 秒随机底噪 `IDLE`。
+- 原始多轮样本会在完整轮次之间插入 1-3 秒随机底噪 `<FD_IDLE>`。
 - `incomplete_query` 的 split query 内部、`interrupt` 的 base answer prefix 到 interrupt query 中间，不套用完整轮间 idle 规则。
 - `incomplete_query_clarification` 由半句 query 和 LLM 生成的追问回复组成，可以插入单轮前或多轮中间。
 - `interrupt` 只能使用原始 `history` 非空、转换后 `turns >= 2` 的 rows。

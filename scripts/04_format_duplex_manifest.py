@@ -14,6 +14,17 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from duplex_label_protocol import (
+    EOR,
+    FD_A_ANSWER,
+    FD_D_WAIT,
+    FD_F_WAIT,
+    FD_G_INTERRUPT,
+    FD_H_CONTINUE,
+    FD_IDLE,
+    PROTOCOL_NAME,
+)
+
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -28,12 +39,18 @@ def float_to_pcm16(x: float) -> int:
     return int(max(-32768, min(32767, round(max(-1.0, min(1.0, float(x))) * 32767.0))))
 
 
-def read_wav_with_soundfile(path: Path, sample_rate: int) -> List[int]:
+def read_wav_with_soundfile(path: Path, sample_rate: int, *, allow_resample: bool = False) -> List[int]:
     import soundfile as sf  # type: ignore
 
     data, sr = sf.read(str(path), dtype="float32", always_2d=True)
     if sr != sample_rate:
-        raise ValueError(f"{path} sample_rate={sr}, expected {sample_rate}")
+        if not allow_resample:
+            raise ValueError(f"{path} sample_rate={sr}, expected {sample_rate}")
+        import torch  # type: ignore
+        from torchaudio.functional import resample  # type: ignore
+
+        waveform = torch.from_numpy(data.T)
+        data = resample(waveform, int(sr), int(sample_rate)).T.numpy()
     if data.size == 0:
         return []
     if data.shape[1] == 1:
@@ -43,12 +60,14 @@ def read_wav_with_soundfile(path: Path, sample_rate: int) -> List[int]:
     return [float_to_pcm16(x) for x in mono]
 
 
-def read_wav_pcm16_fallback(path: Path, sample_rate: int) -> List[int]:
+def read_wav_pcm16_fallback(path: Path, sample_rate: int, *, allow_resample: bool = False) -> List[int]:
     with wave.open(str(path), "rb") as wf:
         channels = wf.getnchannels()
         width = wf.getsampwidth()
         sr = wf.getframerate()
         if sr != sample_rate:
+            if allow_resample:
+                raise RuntimeError("soundfile and torchaudio are required to resample backchannel audio")
             raise ValueError(f"{path} sample_rate={sr}, expected {sample_rate}")
         raw = wf.readframes(wf.getnframes())
     if width != 2:
@@ -62,11 +81,11 @@ def read_wav_pcm16_fallback(path: Path, sample_rate: int) -> List[int]:
     return mono
 
 
-def read_wav_mono_pcm16(path: Path, sample_rate: int) -> List[int]:
+def read_wav_mono_pcm16(path: Path, sample_rate: int, *, allow_resample: bool = False) -> List[int]:
     try:
-        return read_wav_with_soundfile(path, sample_rate)
+        return read_wav_with_soundfile(path, sample_rate, allow_resample=allow_resample)
     except ImportError:
-        return read_wav_pcm16_fallback(path, sample_rate)
+        return read_wav_pcm16_fallback(path, sample_rate, allow_resample=allow_resample)
 
 
 def write_wav_pcm16(path: Path, samples: List[int], sample_rate: int) -> None:
@@ -346,6 +365,7 @@ class Builder:
         self.timeline: List[Dict[str, Any]] = []
         self.query_vad: List[Dict[str, Any]] = []
         self.inter_turn_idle: List[Dict[str, Any]] = []
+        self.clarification_wait: List[Dict[str, Any]] = []
 
     def idx(self) -> int:
         return len(self.timeline)
@@ -356,22 +376,36 @@ class Builder:
         for _ in range(chunks):
             self.timeline.append(entry(self.idx(), label, kind, self.chunk_n, self.chunk_ms, source, turn_id))
 
-    def add_query_audio(self, path: str, turn_id: int, source: str, *, first_label: str = "WAIT", trim_silence: bool = False) -> None:
-        samples = read_wav_mono_pcm16(Path(path), self.sample_rate)
+    def add_query_audio(
+        self,
+        path: str,
+        turn_id: int,
+        source: str,
+        *,
+        first_label: str = FD_D_WAIT,
+        last_label: Optional[str] = None,
+        trim_silence: bool = False,
+        min_audio_sec: Optional[float] = None,
+        allow_resample: bool = False,
+        vad_processor: Optional[VadSilenceReplacer] = None,
+    ) -> None:
+        samples = read_wav_mono_pcm16(Path(path), self.sample_rate, allow_resample=allow_resample)
+        effective_min_sec = self.min_query_audio_sec if min_audio_sec is None else min_audio_sec
         duration_sec = len(samples) / self.sample_rate if self.sample_rate else 0.0
-        if self.min_query_audio_sec > 0 and duration_sec < self.min_query_audio_sec:
+        if effective_min_sec > 0 and duration_sec < effective_min_sec:
             raise ValueError(
                 f"query_audio_too_short path={path} "
                 f"duration_sec={duration_sec:.6f} "
-                f"min_query_audio_sec={self.min_query_audio_sec:.6f}"
+                f"min_audio_sec={effective_min_sec:.6f}"
             )
-        samples, vad_meta = self.vad.process(samples, self.rng, trim_silence=trim_silence)
+        processor = vad_processor or self.vad
+        samples, vad_meta = processor.process(samples, self.rng, trim_silence=trim_silence)
         processed_duration_sec = len(samples) / self.sample_rate if self.sample_rate else 0.0
-        if self.min_query_audio_sec > 0 and processed_duration_sec < self.min_query_audio_sec:
+        if effective_min_sec > 0 and processed_duration_sec < effective_min_sec:
             raise ValueError(
                 f"query_audio_too_short_after_vad path={path} "
                 f"duration_sec={processed_duration_sec:.6f} "
-                f"min_query_audio_sec={self.min_query_audio_sec:.6f}"
+                f"min_audio_sec={effective_min_sec:.6f}"
             )
         vad_meta.update({"path": path, "source": source, "turn_id": turn_id})
         chunks = int(math.ceil(len(samples) / self.chunk_n)) if samples else 0
@@ -383,8 +417,15 @@ class Builder:
         self.query_vad.append(vad_meta)
         self.audio.extend(samples)
         for i in range(chunks):
-            label = first_label if i == 0 else "WAIT"
-            kind = "wait" if label == "WAIT" else label.lower()
+            label = first_label if i == 0 else FD_D_WAIT
+            if last_label is not None and i == chunks - 1:
+                label = last_label
+            kind_by_label = {
+                FD_D_WAIT: "wait",
+                FD_F_WAIT: "incomplete_query_detected",
+                FD_G_INTERRUPT: "interrupt",
+            }
+            kind = kind_by_label.get(label, "control")
             self.timeline.append(entry(self.idx(), label, kind, self.chunk_n, self.chunk_ms, source, turn_id))
 
     def add_answer(self, text: str, turn_id: int, source: str, *, prefix_only: bool = False, min_chunks: int = 0) -> None:
@@ -392,30 +433,31 @@ class Builder:
         need = 1 + len(units) + (0 if prefix_only else 1)
         chunks = max(min_chunks, need)
         self.audio.extend(gaussian_noise(chunks, self.chunk_n, self.rng, self.noise_rms))
-        self.timeline.append(entry(self.idx(), "ANSWER", "answer_trigger", self.chunk_n, self.chunk_ms, source, turn_id))
+        self.timeline.append(entry(self.idx(), FD_A_ANSWER, "answer_trigger", self.chunk_n, self.chunk_ms, source, turn_id))
         for j, unit in enumerate(units):
             self.timeline.append(text_entry(self.idx(), unit, j, self.chunk_n, self.chunk_ms, source, turn_id))
         if not prefix_only:
-            self.timeline.append(text_entry(self.idx(), {"token_id": None, "token_text": "<EOR>"}, len(units), self.chunk_n, self.chunk_ms, source, turn_id))
+            self.timeline.append(text_entry(self.idx(), {"token_id": None, "token_text": EOR}, len(units), self.chunk_n, self.chunk_ms, source, turn_id))
             self.timeline[-1]["kind"] = "eor"
-            self.timeline[-1]["label"] = "<EOR>"
-            self.timeline[-1]["token_text"] = "<EOR>"
+            self.timeline[-1]["label"] = EOR
+            self.timeline[-1]["token_text"] = EOR
         while len(self.timeline) < len(self.audio) // self.chunk_n:
-            self.timeline.append(entry(self.idx(), "IDLE", "answer_tail_idle", self.chunk_n, self.chunk_ms, source, turn_id))
+            self.timeline.append(entry(self.idx(), FD_IDLE, "answer_tail_idle", self.chunk_n, self.chunk_ms, source, turn_id))
 
     def add_answer_continuation(self, text: str, turn_id: int, source: str, *, text_idx_offset: int = 0, min_chunks: int = 0) -> None:
         units = self.tokenizer.encode(text)
-        need = len(units) + 1
+        need = 1 + len(units) + 1
         chunks = max(min_chunks, need)
         self.audio.extend(gaussian_noise(chunks, self.chunk_n, self.rng, self.noise_rms))
+        self.timeline.append(entry(self.idx(), FD_A_ANSWER, "answer_trigger", self.chunk_n, self.chunk_ms, source, turn_id))
         for j, unit in enumerate(units):
             self.timeline.append(text_entry(self.idx(), unit, text_idx_offset + j, self.chunk_n, self.chunk_ms, source, turn_id))
-        self.timeline.append(text_entry(self.idx(), {"token_id": None, "token_text": "<EOR>"}, text_idx_offset + len(units), self.chunk_n, self.chunk_ms, source, turn_id))
+        self.timeline.append(text_entry(self.idx(), {"token_id": None, "token_text": EOR}, text_idx_offset + len(units), self.chunk_n, self.chunk_ms, source, turn_id))
         self.timeline[-1]["kind"] = "eor"
-        self.timeline[-1]["label"] = "<EOR>"
-        self.timeline[-1]["token_text"] = "<EOR>"
+        self.timeline[-1]["label"] = EOR
+        self.timeline[-1]["token_text"] = EOR
         while len(self.timeline) < len(self.audio) // self.chunk_n:
-            self.timeline.append(entry(self.idx(), "IDLE", "answer_tail_idle", self.chunk_n, self.chunk_ms, source, turn_id))
+            self.timeline.append(entry(self.idx(), FD_IDLE, "answer_tail_idle", self.chunk_n, self.chunk_ms, source, turn_id))
 
 
     def answer_region_chunks(self, text: str) -> int:
@@ -437,7 +479,7 @@ def add_initial_idle(b: Builder, args: argparse.Namespace) -> None:
         chunks = args.initial_idle_chunks
     else:
         chunks = random_duration_chunks(b.rng, args.initial_idle_sec_min, args.initial_idle_sec_max, args.chunk_ms)
-    b.add_noise(chunks, "IDLE", "initial_idle", "gn_before")
+    b.add_noise(chunks, FD_IDLE, "initial_idle", "gn_before")
 
 
 def row_has_original_history(row: Dict[str, Any]) -> bool:
@@ -453,13 +495,33 @@ def add_inter_turn_idle(b: Builder, args: argparse.Namespace, row: Dict[str, Any
         return
     chunks = random_duration_chunks(b.rng, args.inter_turn_idle_sec_min, args.inter_turn_idle_sec_max, args.chunk_ms)
     source = f"gn_between_turn{prev_turn_id}_turn{next_turn_id}"
-    b.add_noise(chunks, "IDLE", "between_turn_idle", source, prev_turn_id)
+    b.add_noise(chunks, FD_IDLE, "between_turn_idle", source, prev_turn_id)
     b.inter_turn_idle.append({
         "after_turn_id": prev_turn_id,
         "before_turn_id": next_turn_id,
         "chunks": chunks,
         "duration_sec": round(chunks * args.chunk_ms / 1000.0, 6),
         "range_sec": [args.inter_turn_idle_sec_min, args.inter_turn_idle_sec_max],
+        "audio_source": source,
+    })
+
+
+def add_clarification_wait(b: Builder, args: argparse.Namespace, row: Dict[str, Any], turn_id: int) -> None:
+    policy = row.get("gn_policy") if isinstance(row.get("gn_policy"), dict) else {}
+    wait_range = policy.get("clarification_wait_range_sec", [3.0, 5.0])
+    if not isinstance(wait_range, list) or len(wait_range) != 2:
+        raise ValueError("clarification_wait_range_sec must contain [min_sec, max_sec]")
+    min_sec, max_sec = float(wait_range[0]), float(wait_range[1])
+    if min_sec < 0 or max_sec < 0:
+        raise ValueError("clarification wait range must be non-negative")
+    chunks = random_duration_chunks(b.rng, min_sec, max_sec, args.chunk_ms)
+    source = f"gn_before_turn{turn_id}_clarification"
+    b.add_noise(chunks, FD_IDLE, "clarification_wait", source, turn_id)
+    b.clarification_wait.append({
+        "turn_id": turn_id,
+        "chunks": chunks,
+        "duration_sec": round(chunks * args.chunk_ms / 1000.0, 6),
+        "range_sec": [min_sec, max_sec],
         "audio_source": source,
     })
 
@@ -503,7 +565,7 @@ def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -
         add_complete_turn(b, assets, turn, idx, turn_query_asset_key(turns, idx))
         if idx + 1 < len(turns):
             add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
-    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "normal_qa")
 
@@ -523,15 +585,25 @@ def build_incomplete_clarification(row: Dict[str, Any], out_wav: Path, args: arg
     turns = row.get("turns") or []
     if not turns:
         raise ValueError("incomplete_query_clarification requires non-empty turns")
+    inserted_turn_id = int(row.get("inserted_turn_id") or 0)
     for idx, turn in enumerate(turns):
         key = f"turn{idx + 1:03d}_query"
         turn_id = idx + 1
-        b.add_query_audio(assets[key]["audio"], turn_id, f"turn{turn_id}_query_audio", trim_silence=True)
+        is_inserted = turn_id == inserted_turn_id or turn.get("source") == "inserted_incomplete_query"
+        b.add_query_audio(
+            assets[key]["audio"],
+            turn_id,
+            f"turn{turn_id}_query_audio",
+            last_label=FD_F_WAIT if is_inserted else None,
+            trim_silence=True,
+        )
+        if is_inserted:
+            add_clarification_wait(b, args, row, turn_id)
         answer_text = str(turn.get("answer_text", ""))
         b.add_answer(answer_text, turn_id, f"turn{turn_id}_answer_gn", min_chunks=b.answer_region_chunks(answer_text))
         if idx + 1 < len(turns):
             add_inter_turn_idle(b, args, row, turn_id, turn_id + 1)
-    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "incomplete_query_clarification")
 
@@ -566,7 +638,7 @@ def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace
     b.add_answer(row["base"]["answer_prefix_text"], base_turn_id, "base_answer_prefix_gn", prefix_only=True)
 
     donor_turn_id = donor_idx + 1
-    b.add_query_audio(assets["donor_query"]["audio"], donor_turn_id, "donor_query_audio", first_label="INTERRUPT", trim_silence=True)
+    b.add_query_audio(assets["donor_query"]["audio"], donor_turn_id, "donor_query_audio", first_label=FD_G_INTERRUPT, trim_silence=True)
     donor_answer = row["donor"]["answer_text"]
     b.add_answer(donor_answer, donor_turn_id, "donor_answer_gn", min_chunks=b.answer_region_chunks(donor_answer))
 
@@ -577,7 +649,7 @@ def build_interrupt(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace
         if idx + 1 < len(turns):
             add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
 
-    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "player_interrupts_ai")
 
@@ -594,19 +666,48 @@ def build_backchannel(row: Dict[str, Any], out_wav: Path, args: argparse.Namespa
     )
     add_initial_idle(b, args)
     assets = row["tts_assets"]
-    b.add_query_audio(assets["query"]["audio"], 1, "query_audio")
+    turns = [turn for turn in (row.get("turns") or []) if isinstance(turn, dict)]
+    if not turns:
+        turns = [{"turn_id": 1, "question_text": row.get("question_text", ""), "answer_text": row.get("answer_text", "")}]
+    special_idx = int(row.get("backchannel_turn_index") or 0) - 1
+    if not (0 <= special_idx < len(turns)):
+        special_idx = find_turn_index(turns, row.get("backchannel_turn_id"), len(turns) - 1)
+
+    for idx in range(special_idx):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
+    turn_id = special_idx + 1
+    b.add_query_audio(assets["query"]["audio"], turn_id, "backchannel_turn_query_audio", trim_silence=True)
     answer_prefix = row["answer_prefix_text"]
     answer_remaining = row["answer_remaining_text"]
-    b.add_answer(answer_prefix, 1, "answer_prefix_gn", prefix_only=True)
-    b.add_query_audio(assets["backchannel"]["audio"], 1, "backchannel_audio", first_label="BACKCHANNEL")
+    b.add_answer(answer_prefix, turn_id, "answer_prefix_gn", prefix_only=True)
+    b.add_query_audio(
+        assets["backchannel"]["audio"],
+        turn_id,
+        "backchannel_audio",
+        first_label=FD_G_INTERRUPT,
+        trim_silence=True,
+        min_audio_sec=args.min_backchannel_audio_sec,
+        allow_resample=True,
+        vad_processor=args.backchannel_vad_processor,
+    )
+    b.add_noise(1, FD_H_CONTINUE, "backchannel_continue", "backchannel_continue_gn", turn_id)
     b.add_answer_continuation(
         answer_remaining,
-        1,
+        turn_id,
         "answer_remaining_gn",
         text_idx_offset=b.token_count(answer_prefix),
         min_chunks=b.answer_region_chunks(answer_remaining),
     )
-    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    if special_idx + 1 < len(turns):
+        add_inter_turn_idle(b, args, row, turn_id, turn_id + 1)
+    for idx in range(special_idx + 1, len(turns)):
+        add_complete_turn(b, assets, turns[idx], idx, f"turn{idx + 1:03d}_query")
+        if idx + 1 < len(turns):
+            add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "player_backchannel")
 
@@ -636,9 +737,15 @@ def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespac
         add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
 
     special_turn_id = special_idx + 1
-    b.add_query_audio(assets["query_part1"]["audio"], special_turn_id, "query_part1_audio", trim_silence=True)
+    b.add_query_audio(
+        assets["query_part1"]["audio"],
+        special_turn_id,
+        "query_part1_audio",
+        last_label=FD_F_WAIT,
+        trim_silence=True,
+    )
     between_chunks = max(1, int(round(float(row["gn_policy"]["between_query_parts_sec"]) * 1000.0 / args.chunk_ms)))
-    b.add_noise(between_chunks, "WAIT", "incomplete_pause_wait", "gn_between_query_parts", special_turn_id)
+    b.add_noise(between_chunks, FD_IDLE, "incomplete_pause_wait", "gn_between_query_parts", special_turn_id)
     b.add_query_audio(assets["query_part2"]["audio"], special_turn_id, "query_part2_audio", trim_silence=True)
     answer = row["answer_text_if_complete"]
     b.add_answer(answer, special_turn_id, "answer_gn", min_chunks=b.answer_region_chunks(answer))
@@ -650,7 +757,7 @@ def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespac
         if idx + 1 < len(turns):
             add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
 
-    b.add_noise(args.final_idle_chunks, "IDLE", "final_idle", "gn_after")
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
     write_wav_pcm16(out_wav, b.audio, args.sample_rate)
     return common_manifest(row, out_wav, b, "incomplete_query")
 
@@ -662,6 +769,7 @@ def common_manifest(row: Dict[str, Any], out_wav: Path, b: Builder, scenario: st
         "id": row["id"],
         "source": "cgame_duplex",
         "scenario": scenario,
+        "label_protocol": PROTOCOL_NAME,
         "task": "duplex_qa",
         "audio": str(out_wav),
         "sample_rate": b.sample_rate,
@@ -679,6 +787,7 @@ def common_manifest(row: Dict[str, Any], out_wav: Path, b: Builder, scenario: st
         "vad": b.vad.metadata(),
         "query_vad": b.query_vad,
         "inter_turn_idle": b.inter_turn_idle,
+        "clarification_wait": b.clarification_wait,
         "stats": {
             "timeline_chunks": len(b.timeline),
             "audio_samples": len(b.audio),
@@ -715,7 +824,9 @@ def main() -> None:
     ap.add_argument("--disable_inter_turn_idle", action="store_true", help="Disable random IDLE between original multi-turn dialogue turns.")
     ap.add_argument("--tokenizer_json", default="tokenizers/qwen3_8b/tokenizer.json")
     ap.add_argument("--vad_mode", choices=["silero", "auto", "energy", "off"], default="silero")
+    ap.add_argument("--backchannel_vad_mode", choices=["energy", "silero"], default="energy", help="VAD used for short recorded backchannel clips.")
     ap.add_argument("--min_query_audio_sec", type=float, default=1.0, help="Skip a sample if any required query wav is shorter than this; 0 disables.")
+    ap.add_argument("--min_backchannel_audio_sec", type=float, default=0.08, help="Minimum voiced backchannel duration after VAD; 0 disables.")
     args = ap.parse_args()
 
     tokenizer_json = Path(args.tokenizer_json) if args.tokenizer_json else None
@@ -723,6 +834,11 @@ def main() -> None:
         tokenizer_json = Path.cwd() / tokenizer_json
     args.text_tokenizer = TextTokenizer(str(tokenizer_json) if tokenizer_json else "")
     args.vad_processor = VadSilenceReplacer(args.vad_mode, args.sample_rate, args.noise_rms)
+    args.backchannel_vad_processor = VadSilenceReplacer(
+        args.backchannel_vad_mode,
+        args.sample_rate,
+        args.noise_rms,
+    )
 
     rows = read_jsonl(Path(args.index))
     out_path = Path(args.out)

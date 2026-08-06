@@ -337,6 +337,24 @@ def attach_assets(
             tts_text_punct=tts_text_punct,
         )
     elif scenario == "player_backchannel":
+        turns = [t for t in (out.get("turns") or []) if isinstance(t, dict)]
+        special_idx = int(out.get("backchannel_turn_index") or 0) - 1
+        if turns and not (0 <= special_idx < len(turns)):
+            special_idx = find_turn_index(turns, out.get("backchannel_turn_id"), len(turns) - 1)
+        for idx, turn in enumerate(turns):
+            if idx == special_idx:
+                continue
+            if turn.get("needs_tts", True):
+                add_turn_query_task(
+                    tasks,
+                    assets,
+                    sample_id=sample_id,
+                    key=f"turn{idx + 1:03d}_query",
+                    turn=turn,
+                    wav_dir=wav_dir,
+                    picker=picker,
+                    tts_text_punct=tts_text_punct,
+                )
         add_task(
             tasks,
             assets,
@@ -347,16 +365,17 @@ def attach_assets(
             voice=picker.pick(sample_id, "query"),
             tts_text_punct=tts_text_punct,
         )
-        add_task(
-            tasks,
-            assets,
-            sample_id=sample_id,
-            key="backchannel",
-            text=str(out.get("backchannel_text", "")),
-            wav_dir=wav_dir,
-            voice=picker.pick(sample_id, "backchannel"),
-            tts_text_punct=tts_text_punct,
-        )
+        backchannel = out.get("backchannel_audio")
+        if not isinstance(backchannel, dict) or not backchannel.get("path"):
+            raise ValueError(f"player_backchannel {sample_id} is missing backchannel_audio.path")
+        assets["backchannel"] = {
+            "task_id": None,
+            "text": str(out.get("backchannel_text", "")),
+            "tts_text": None,
+            "audio": str(backchannel["path"]),
+            "source": "recorded_backchannel",
+            "metadata": backchannel,
+        }
     elif scenario == "incomplete_query_candidate":
         turns = [t for t in (out.get("turns") or []) if isinstance(t, dict)]
         special_idx = int(out.get("incomplete_turn_index") or 0) - 1

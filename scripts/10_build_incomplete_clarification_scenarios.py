@@ -86,18 +86,21 @@ def build_scenario(row: Dict[str, Any], answer_field: str) -> Dict[str, Any] | N
         "force_inter_turn_idle": True,
         "audio_plan": [
             "gn_before",
-            "turn query audio + answer GN for each turn",
+            "turn query audio + answer GN for each complete turn",
+            "3-5s WAIT after the inserted partial query before its clarification answer",
             "1-3s gn_between_turns after each EOR before next turn",
             "gn_after",
         ],
         "timeline_plan": [
             "gn_before -> IDLE",
             "each query audio -> WAIT",
+            "inserted partial query -> 3-5s WAIT before ANSWER",
             "each answer GN -> ANSWER + answer text tokens + EOR",
             "between turns -> IDLE",
             "gn_after -> IDLE",
         ],
         "gn_policy": {
+            "clarification_wait_range_sec": [3.0, 5.0],
             "between_turn_idle_range_sec": [1.0, 3.0],
             "force_inter_turn_idle": True,
         },

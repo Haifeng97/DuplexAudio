@@ -92,7 +92,9 @@ def main() -> None:
     ap.add_argument("--disable_inter_turn_idle", action="store_true")
     ap.add_argument("--tokenizer_json", default="tokenizers/qwen3_8b/tokenizer.json")
     ap.add_argument("--vad_mode", choices=["silero", "auto", "energy", "off"], default="silero")
+    ap.add_argument("--backchannel_vad_mode", choices=["energy", "silero"], default="energy")
     ap.add_argument("--min_query_audio_sec", type=float, default=1.0)
+    ap.add_argument("--min_backchannel_audio_sec", type=float, default=0.08)
     ap.add_argument("--monitor_every", type=float, default=2.0)
     ap.add_argument("--script", default="scripts/04_format_duplex_manifest.py")
     ap.add_argument("--quiet", action="store_true", help="Do not print live tqdm progress.")
@@ -141,7 +143,9 @@ def main() -> None:
             "--inter_turn_idle_sec_max", str(args.inter_turn_idle_sec_max),
             "--tokenizer_json", args.tokenizer_json,
             "--vad_mode", args.vad_mode,
+            "--backchannel_vad_mode", args.backchannel_vad_mode,
             "--min_query_audio_sec", str(args.min_query_audio_sec),
+            "--min_backchannel_audio_sec", str(args.min_backchannel_audio_sec),
         ]
         if args.disable_inter_turn_idle:
             cmd.append("--disable_inter_turn_idle")

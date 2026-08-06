@@ -8,14 +8,88 @@ import wave
 from collections import Counter
 from pathlib import Path
 
+from duplex_label_protocol import (
+    ACTIVE_CONTROL_LABELS,
+    EOR,
+    FD_A_ANSWER,
+    FD_D_WAIT,
+    FD_F_WAIT,
+    FD_G_INTERRUPT,
+    FD_H_CONTINUE,
+    FD_IDLE,
+    LEGACY_LABEL_MAP,
+    PROTOCOL_NAME,
+    RESERVED_CONTROL_LABELS,
+)
+
 
 def wav_frames(path: Path) -> int:
     with wave.open(str(path), "rb") as wf:
         return wf.getnframes()
 
 
+def protocol_errors(row: dict) -> list[str]:
+    timeline = row.get("timeline") if isinstance(row.get("timeline"), list) else []
+    labels = [str(item.get("label")) for item in timeline]
+    errors: list[str] = []
+
+    if row.get("label_protocol") != PROTOCOL_NAME:
+        errors.append(f"label_protocol={row.get('label_protocol')!r}, expected={PROTOCOL_NAME!r}")
+
+    legacy = sorted({label for label in labels if label in LEGACY_LABEL_MAP and label != EOR})
+    if legacy:
+        errors.append(f"legacy_labels={legacy}")
+
+    reserved = sorted(set(labels) & RESERVED_CONTROL_LABELS)
+    if reserved:
+        errors.append(f"reserved_labels={reserved}")
+
+    for item in timeline:
+        label = str(item.get("label"))
+        if item.get("label_type") != "text" and label not in ACTIVE_CONTROL_LABELS:
+            errors.append(f"unknown_control_label={label!r}")
+            break
+
+    if FD_A_ANSWER not in labels:
+        errors.append("missing_answer")
+
+    scenario = str(row.get("scenario") or "")
+    expected_f = 1 if scenario in {"incomplete_query", "incomplete_query_candidate", "incomplete_query_clarification"} else 0
+    expected_g = 1 if scenario in {"player_interrupts_ai", "player_backchannel"} else 0
+    expected_h = 1 if scenario == "player_backchannel" else 0
+
+    for label, expected in ((FD_F_WAIT, expected_f), (FD_G_INTERRUPT, expected_g), (FD_H_CONTINUE, expected_h)):
+        actual = labels.count(label)
+        if actual != expected:
+            errors.append(f"{label}_count={actual}, expected={expected}")
+
+    if expected_f and labels.count(FD_F_WAIT) == 1:
+        f_idx = labels.index(FD_F_WAIT)
+        if f_idx + 1 >= len(labels) or labels[f_idx + 1] != FD_IDLE:
+            errors.append("F_WAIT_not_followed_by_IDLE")
+
+    pause_kinds = {"incomplete_pause_wait", "clarification_wait"}
+    bad_pause = [
+        item.get("idx")
+        for item in timeline
+        if item.get("kind") in pause_kinds and item.get("label") != FD_IDLE
+    ]
+    if bad_pause:
+        errors.append(f"pause_not_IDLE_at={bad_pause[:5]}")
+
+    if expected_h and labels.count(FD_H_CONTINUE) == 1:
+        h_idx = labels.index(FD_H_CONTINUE)
+        if h_idx + 1 >= len(labels) or labels[h_idx + 1] != FD_A_ANSWER:
+            errors.append("H_CONTINUE_not_followed_by_A_ANSWER")
+        g_idx = labels.index(FD_G_INTERRUPT) if FD_G_INTERRUPT in labels else len(labels)
+        if g_idx >= h_idx:
+            errors.append("G_INTERRUPT_not_before_H_CONTINUE")
+
+    return errors
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Validate duplex manifest basics.")
+    ap = argparse.ArgumentParser(description="Validate duplex manifest basics and fd_control_v1 labels.")
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--show", type=int, default=3)
     args = ap.parse_args()
@@ -49,8 +123,8 @@ def main() -> None:
                 bad.append({"line": line_no, "id": row.get("id"), "error": "bad_idx", "at": i, "idx": ent.get("idx")})
                 break
             labels[str(ent.get("label"))] += 1
-        if not any(ent.get("label") == "ANSWER" for ent in timeline):
-            bad.append({"line": line_no, "id": row.get("id"), "error": "missing_answer"})
+        for error in protocol_errors(row):
+            bad.append({"line": line_no, "id": row.get("id"), "error": error})
         if len(examples) < args.show:
             examples.append({
                 "id": row.get("id"),

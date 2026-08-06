@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+PROTOCOL_NAME = "fd_control_v1"
+
+FD_IDLE = "<FD_IDLE>"
+FD_D_WAIT = "<FD_D_WAIT>"
+FD_A_ANSWER = "<FD_A_ANSWER>"
+FD_F_WAIT = "<FD_F_WAIT>"
+FD_G_INTERRUPT = "<FD_G_INTERRUPT>"
+FD_H_CONTINUE = "<FD_H_CONTINUE>"
+FD_I_COMPLETE = "<FD_I_COMPLETE>"
+EOR = "<EOR>"
+
+ACTIVE_CONTROL_LABELS = {
+    FD_IDLE,
+    FD_D_WAIT,
+    FD_A_ANSWER,
+    FD_F_WAIT,
+    FD_G_INTERRUPT,
+    FD_H_CONTINUE,
+    EOR,
+}
+
+RESERVED_CONTROL_LABELS = {FD_I_COMPLETE}
+
+LEGACY_LABEL_MAP = {
+    "IDLE": FD_IDLE,
+    "WAIT": FD_D_WAIT,
+    "ANSWER": FD_A_ANSWER,
+    "INTERRUPT": FD_G_INTERRUPT,
+    "BACKCHANNEL": FD_G_INTERRUPT,
+    EOR: EOR,
+}

@@ -6,25 +6,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
-
-
-BACKCHANNEL_TEMPLATES = [
-    "嗯",
-    "嗯嗯",
-    "好",
-    "好嘞",
-    "行",
-    "可以",
-    "收到",
-    "明白",
-    "知道了",
-    "对",
-    "是的",
-    "你继续",
-    "没事你说",
-    "我听着呢",
-]
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -68,6 +50,83 @@ def has_sysprompt_history(row: Dict[str, Any]) -> bool:
     return "<｜User｜>" in sysprompt and "<｜Assistant｜>" in sysprompt
 
 
+def selection_flag(row: Dict[str, Any], name: str) -> bool:
+    selection = row.get("selection")
+    if isinstance(selection, dict) and name in selection:
+        return bool(selection.get(name))
+    turns = [turn for turn in (row.get("turns") or []) if isinstance(turn, dict)]
+    if not turns:
+        return False
+    if name in {"can_normal", "can_interrupt_donor"}:
+        return any(str(turn.get("question_text") or "") and str(turn.get("answer_text") or "") for turn in turns)
+    if name == "can_interrupt_base":
+        return any(len(str(turn.get("answer_text") or "")) >= 8 for turn in turns)
+    if name == "can_incomplete_query":
+        return any(len(str(turn.get("question_text") or "")) >= 8 for turn in turns)
+    return False
+
+
+def source_group_id(row: Dict[str, Any]) -> str:
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    return str(meta.get("source_group_id") or row.get("source_group_id") or row.get("source_id") or row.get("id"))
+
+
+def normalize_row(
+    row: Dict[str, Any],
+    *,
+    min_question_chars: int,
+    max_question_chars: int,
+    max_answer_chars: int,
+    max_turns: int,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, int]]:
+    turns = [dict(turn) for turn in (row.get("turns") or []) if isinstance(turn, dict)]
+    stats = {"history_turns_dropped": 0, "leading_turns_truncated": 0}
+    if not turns:
+        return None, {**stats, "missing_turns": 1}
+
+    current = turns[-1]
+    current_q = str(current.get("question_text") or "")
+    current_a = str(current.get("answer_text") or "")
+    if not current_q or not current_a:
+        return None, {**stats, "missing_current_text": 1}
+    if len(current_q) < min_question_chars:
+        return None, {**stats, "current_question_too_short": 1}
+    if max_question_chars > 0 and len(current_q) > max_question_chars:
+        return None, {**stats, "current_question_too_long": 1}
+    if max_answer_chars > 0 and len(current_a) > max_answer_chars:
+        return None, {**stats, "current_answer_too_long": 1}
+
+    kept_history: List[Dict[str, Any]] = []
+    for turn in turns[:-1]:
+        question = str(turn.get("question_text") or "")
+        answer = str(turn.get("answer_text") or "")
+        valid = bool(question and answer)
+        valid = valid and len(question) >= min_question_chars
+        valid = valid and (max_question_chars <= 0 or len(question) <= max_question_chars)
+        valid = valid and (max_answer_chars <= 0 or len(answer) <= max_answer_chars)
+        if valid:
+            kept_history.append(turn)
+        else:
+            stats["history_turns_dropped"] += 1
+
+    normalized_turns = kept_history + [current]
+    if max_turns > 0 and len(normalized_turns) > max_turns:
+        stats["leading_turns_truncated"] = len(normalized_turns) - max_turns
+        normalized_turns = normalized_turns[-max_turns:]
+    for turn_id, turn in enumerate(normalized_turns, start=1):
+        turn["turn_id"] = turn_id
+
+    out = dict(row)
+    out["turns"] = normalized_turns
+    out["question_text"] = current_q
+    out["answer_text"] = current_a
+    meta = dict(row.get("meta") or {})
+    meta["turn_count"] = len(normalized_turns)
+    meta["history_turn_count"] = max(0, len(normalized_turns) - 1)
+    out["meta"] = meta
+    return out, stats
+
+
 def answer_gn_chunks(answer_text: str) -> int:
     return max(1, int(len(answer_text) * 1.1 + 0.999999))
 
@@ -79,6 +138,7 @@ def normal_candidate(row: Dict[str, Any], chunk_ms: int) -> Dict[str, Any]:
         "id": row["id"],
         "scenario": "normal_qa",
         "source_id": row["id"],
+        "source_group_id": source_group_id(row),
         "sysprompt": row.get("sysprompt", ""),
         "turns": row.get("turns", []),
         "question_text": turn.get("question_text", row.get("question_text", "")),
@@ -113,6 +173,7 @@ def interrupt_candidate(base: Dict[str, Any], donor: Dict[str, Any], prefix_char
     return {
         "id": f"interrupt__{base['id']}__{donor['id']}",
         "scenario": "player_interrupts_ai",
+        "source_group_ids": [source_group_id(base), source_group_id(donor)],
         "source": "candidate_pair_only_no_timeline_yet",
         "base": {
             "id": base["id"],
@@ -169,6 +230,7 @@ def same_row_interrupt_candidate(row: Dict[str, Any], prefix_chars: int) -> Dict
         "scenario": "player_interrupts_ai",
         "source": "same_row_previous_turn_interrupted_by_next_turn",
         "source_id": row["id"],
+        "source_group_id": source_group_id(row),
         "sysprompt": row.get("sysprompt", ""),
         "turns": row.get("turns", []),
         "base": {
@@ -209,7 +271,12 @@ def same_row_interrupt_candidate(row: Dict[str, Any], prefix_chars: int) -> Dict
     }
 
 
-def backchannel_candidate(row: Dict[str, Any], backchannel_text: str, prefix_chars: int, chunk_ms: int) -> Dict[str, Any]:
+def backchannel_candidate(
+    row: Dict[str, Any],
+    backchannel: Dict[str, Any],
+    prefix_chars: int,
+    chunk_ms: int,
+) -> Dict[str, Any]:
     turn = first_turn(row) or {}
     answer_text = str(turn.get("answer_text", ""))
     prefix_chars = max(1, min(prefix_chars, max(1, len(answer_text) - 1)))
@@ -219,13 +286,26 @@ def backchannel_candidate(row: Dict[str, Any], backchannel_text: str, prefix_cha
         "id": f"backchannel__{row['id']}__p{prefix_chars}",
         "scenario": "player_backchannel",
         "source_id": row["id"],
+        "source_group_id": source_group_id(row),
         "sysprompt": row.get("sysprompt", ""),
+        "turns": row.get("turns", []),
+        "backchannel_turn_id": turn.get("turn_id"),
+        "backchannel_turn_index": len(row.get("turns", []) or []),
         "question_text": turn.get("question_text", ""),
         "answer_text": answer_text,
         "answer_prefix_text": answer_prefix,
         "answer_remaining_text": answer_remaining,
         "prefix_chars": prefix_chars,
-        "backchannel_text": backchannel_text,
+        "backchannel_text": str(backchannel.get("text") or ""),
+        "backchannel_audio": {
+            "path": str(backchannel.get("audio") or ""),
+            "clip_id": backchannel.get("clip_id"),
+            "duration_sec": backchannel.get("duration_sec"),
+            "sample_rate": backchannel.get("sample_rate"),
+            "speaker": backchannel.get("speaker"),
+            "gender": backchannel.get("gender"),
+            "source_dataset": backchannel.get("source_dataset", "magicdata_ramc"),
+        },
         "audio_plan": [
             "gn_before",
             "query_audio",
@@ -238,8 +318,8 @@ def backchannel_candidate(row: Dict[str, Any], backchannel_text: str, prefix_cha
             "gn_before -> IDLE",
             "query_audio -> WAIT",
             "gn_answer_prefix_region -> ANSWER + answer prefix tokens, no EOR",
-            "player backchannel audio -> WAIT",
-            "gn_answer_remaining_region -> remaining answer text tokens + EOR",
+            "player backchannel audio -> INTERRUPT then WAIT",
+            "gn_answer_remaining_region -> ANSWER + remaining answer text tokens + EOR",
             "gn_after -> IDLE",
         ],
         "gn_policy": {
@@ -277,6 +357,7 @@ def incomplete_candidate(row: Dict[str, Any], rng: random.Random, min_prefix_cha
         "id": f"incomplete__{row['id']}__cut{cut}",
         "scenario": "incomplete_query_candidate",
         "source_id": row["id"],
+        "source_group_id": source_group_id(row),
         "sysprompt": row.get("sysprompt", ""),
         "turns": row.get("turns", []),
         "incomplete_turn_id": turn.get("turn_id"),
@@ -323,7 +404,11 @@ def main() -> None:
     ap.add_argument("--min_interrupt_answer_chars", type=int, default=8)
     ap.add_argument("--min_backchannel_answer_chars", type=int, default=8)
     ap.add_argument("--min_incomplete_prefix_chars", type=int, default=3)
-    ap.add_argument("--backchannel_templates", default=",".join(BACKCHANNEL_TEMPLATES))
+    ap.add_argument("--min_question_chars", type=int, default=1)
+    ap.add_argument("--max_question_chars", type=int, default=240)
+    ap.add_argument("--max_answer_chars", type=int, default=360)
+    ap.add_argument("--max_turns", type=int, default=8)
+    ap.add_argument("--backchannel_manifest", default="", help="JSONL from 16_extract_magicdata_backchannels.py")
     ap.add_argument("--chunk_ms", type=int, default=180)
     ap.add_argument("--require_history", action="store_true")
     ap.add_argument("--require_sysprompt_history", action="store_true")
@@ -332,32 +417,45 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     input_rows = read_jsonl(Path(args.input))
-    rows = list(input_rows)
+    rows = []
+    normalization_stats: Dict[str, int] = {}
+    for row in input_rows:
+        normalized, row_stats = normalize_row(
+            row,
+            min_question_chars=args.min_question_chars,
+            max_question_chars=args.max_question_chars,
+            max_answer_chars=args.max_answer_chars,
+            max_turns=args.max_turns,
+        )
+        for key, value in row_stats.items():
+            normalization_stats[key] = normalization_stats.get(key, 0) + value
+        if normalized is not None:
+            rows.append(normalized)
     if args.require_history:
         rows = [r for r in rows if has_train_history(r)]
     if args.require_sysprompt_history:
         rows = [r for r in rows if has_sysprompt_history(r)]
     out_dir = Path(args.out_dir)
 
-    normal_pool = [r for r in rows if r.get("selection", {}).get("can_normal")]
+    normal_pool = [r for r in rows if selection_flag(r, "can_normal")]
     interrupt_source_rows = [r for r in rows if has_train_history(r)]
     interrupt_base_pool = [
         r for r in interrupt_source_rows
-        if r.get("selection", {}).get("can_interrupt_base")
+        if selection_flag(r, "can_interrupt_base")
         and len(str((first_turn(r) or {}).get("answer_text", ""))) >= args.min_interrupt_answer_chars
     ]
     same_row_interrupt_pool = [
         r for r in interrupt_source_rows
-        if r.get("selection", {}).get("can_interrupt_base")
+        if selection_flag(r, "can_interrupt_base")
         and len(str((r.get("turns") or [])[-2].get("answer_text", ""))) >= args.min_interrupt_answer_chars
     ]
-    interrupt_donor_pool = [r for r in interrupt_source_rows if r.get("selection", {}).get("can_interrupt_donor")]
+    interrupt_donor_pool = [r for r in interrupt_source_rows if selection_flag(r, "can_interrupt_donor")]
     backchannel_pool = [
         r for r in rows
-        if r.get("selection", {}).get("can_normal")
+        if selection_flag(r, "can_normal")
         and len(str((first_turn(r) or {}).get("answer_text", ""))) >= args.min_backchannel_answer_chars
     ]
-    incomplete_pool = [r for r in rows if r.get("selection", {}).get("can_incomplete_query")]
+    incomplete_pool = [r for r in rows if selection_flag(r, "can_incomplete_query")]
 
     rng.shuffle(normal_pool)
     rng.shuffle(interrupt_base_pool)
@@ -393,16 +491,17 @@ def main() -> None:
             prefix_chars = rng.randint(1, max(1, max_prefix))
             interrupt_rows.append(interrupt_candidate(base, donor, prefix_chars))
 
-    templates = [x.strip() for x in str(args.backchannel_templates).split(",") if x.strip()]
-    if not templates:
-        templates = BACKCHANNEL_TEMPLATES
+    backchannel_clips = read_jsonl(Path(args.backchannel_manifest)) if args.backchannel_manifest else []
+    rng.shuffle(backchannel_clips)
     backchannel_rows = []
-    for row in backchannel_pool:
+    for idx, row in enumerate(backchannel_pool):
+        if not backchannel_clips:
+            break
         answer_text = str((first_turn(row) or {}).get("answer_text", ""))
         max_prefix = min(len(answer_text) - 1, 12)
         prefix_chars = rng.randint(1, max(1, max_prefix))
-        backchannel_text = templates[len(backchannel_rows) % len(templates)]
-        backchannel_rows.append(backchannel_candidate(row, backchannel_text, prefix_chars, args.chunk_ms))
+        backchannel = backchannel_clips[idx % len(backchannel_clips)]
+        backchannel_rows.append(backchannel_candidate(row, backchannel, prefix_chars, args.chunk_ms))
         if limit_each is not None and len(backchannel_rows) >= limit_each:
             break
 
@@ -419,6 +518,13 @@ def main() -> None:
         "out_dir": str(out_dir),
         "input_rows": len(input_rows),
         "rows": len(rows),
+        "normalization": {
+            "min_question_chars": args.min_question_chars,
+            "max_question_chars": args.max_question_chars,
+            "max_answer_chars": args.max_answer_chars,
+            "max_turns": args.max_turns,
+            "stats": normalization_stats,
+        },
         "require_history": bool(args.require_history),
         "require_sysprompt_history": bool(args.require_sysprompt_history),
         "interrupt_pair_mode": args.interrupt_pair_mode,
@@ -429,6 +535,8 @@ def main() -> None:
         "same_row_interrupt_pool": len(same_row_interrupt_pool),
         "interrupt_donor_pool": len(interrupt_donor_pool),
         "backchannel_pool": len(backchannel_pool),
+        "backchannel_manifest": args.backchannel_manifest,
+        "backchannel_clips": len(backchannel_clips),
         "incomplete_pool": len(incomplete_pool),
         "normal_written": write_jsonl(out_dir / "normal_qa_candidates.jsonl", normal_rows),
         "interrupt_written": write_jsonl(out_dir / "player_interrupt_candidates.jsonl", interrupt_rows),
