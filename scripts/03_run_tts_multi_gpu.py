@@ -162,13 +162,17 @@ def split_tasks(lines: List[str], out_dir: Path, prefix: str, shards: int) -> Li
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Split TTS tasks and run one or more CosyVoice workers per GPU.")
+    ap = argparse.ArgumentParser(description="Split TTS tasks and run one or more TTS workers per GPU.")
     ap.add_argument("--tasks", required=True, help="Combined tts_tasks.jsonl")
     ap.add_argument("--work_dir", default="", help="Where to write auto shards/results/logs. Default: tasks file directory.")
     ap.add_argument("--gpus", default="4,5,6,7", help="Comma-separated physical GPU ids.")
     ap.add_argument("--procs_per_gpu", type=int, default=1)
+    ap.add_argument("--engine", choices=["cosyvoice", "qwen3_tts"], default="cosyvoice")
     ap.add_argument("--cosyvoice_repo", default="/data/haifengjia/models/CosyVoice")
-    ap.add_argument("--model_dir", default="/data/haifengjia/models/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B")
+    ap.add_argument("--model_dir", default="", help="Local model directory or Hugging Face model id")
+    ap.add_argument("--language", default="Chinese")
+    ap.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
+    ap.add_argument("--attn_implementation", choices=["flash_attention_2", "sdpa", "eager"], default="flash_attention_2")
     ap.add_argument("--progress_every", type=int, default=50)
     ap.add_argument("--project", default=os.environ.get("PROJECT", ""))
     ap.add_argument("--python", default=sys.executable, help="Python executable to run workers; default is current Python.")
@@ -177,6 +181,11 @@ def main() -> None:
     ap.add_argument("--monitor_every", type=float, default=0.5, help="Refresh aggregate progress every N seconds; 0 disables.")
     args = ap.parse_args()
 
+    if not args.model_dir:
+        if args.engine == "qwen3_tts":
+            args.model_dir = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        else:
+            args.model_dir = "/data/haifengjia/models/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B"
     tasks_path = Path(args.tasks)
     work_dir = Path(args.work_dir) if args.work_dir else tasks_path.parent
     shard_dir = work_dir / "auto_shards"
@@ -200,21 +209,27 @@ def main() -> None:
         gpu = gpus[worker_idx % len(gpus)]
         result_path = result_dir / f"tts_results_{worker_idx:02d}.jsonl"
         log_path = log_dir / f"tts_worker_{worker_idx:02d}_gpu{gpu}.log"
+        worker_script = "scripts/03_run_qwen3_tts.py" if args.engine == "qwen3_tts" else "scripts/03_run_tts.py"
         cmd = [
             args.python,
-            "scripts/03_run_tts.py",
+            worker_script,
             "--tasks", str(shard_path),
             "--results", str(result_path),
-            "--cosyvoice_repo", args.cosyvoice_repo,
             "--model_dir", args.model_dir,
             "--progress_every", str(args.progress_every),
         ]
+        if args.engine == "cosyvoice":
+            cmd.extend(["--cosyvoice_repo", args.cosyvoice_repo])
+        else:
+            cmd.extend(["--language", args.language, "--dtype", args.dtype, "--attn_implementation", args.attn_implementation])
         if args.overwrite:
             cmd.append("--overwrite")
         commands.append((worker_idx, gpu, cmd, log_path, shard_path, result_path))
 
     summary = {
         "tasks": str(tasks_path),
+        "engine": args.engine,
+        "model_dir": args.model_dir,
         "total_tasks": len(lines),
         "work_dir": str(work_dir),
         "gpus": gpus,
