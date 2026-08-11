@@ -203,7 +203,7 @@
 
 以下均属于下游产物，输入数据里不要提前填写：
 
-- `<FD_IDLE>`、`<FD_D_WAIT>`、`<FD_A_ANSWER>`、`<FD_F_WAIT>`、`<FD_G_INTERRUPT>`、`<FD_H_CONTINUE>`、`<FD_I_COMPLETE>`、`<EOR>`。
+- `<FD_IDLE>`、`<FD_D_WAIT>`、`<FD_A_ANSWER>`、`<FD_F_WAIT>`、`<FD_G_INTERRUPT>`、`<FD_H_CONTINUE>`、`<FD_I_COMPLETE>`、`<FD_J_ACTIVE>`、`<EOR>`。
 - `<FD_IDLE>`/`<FD_D_WAIT>` 时长、chunk 序列或 token 序列。
 - incomplete query 的截断点。
 - clarification 的插入位置和澄清回答。

@@ -25,6 +25,7 @@ from duplex_label_protocol import (
     FD_G_INTERRUPT,
     FD_H_CONTINUE,
     FD_IDLE,
+    FD_J_ACTIVE,
     LEGACY_LABEL_MAP,
     PROTOCOL_NAME,
 )
@@ -128,6 +129,9 @@ def mark_f_wait_before_pause(timeline: List[Dict[str, Any]], pause_idx: int, tur
         item = timeline[idx]
         if turn_id and int(item.get("turn_id") or 0) != turn_id:
             continue
+        if item.get("label") == FD_F_WAIT:
+            item["kind"] = "incomplete_query_detected"
+            return
         if item.get("label") == FD_D_WAIT:
             item["label"] = FD_F_WAIT
             item["kind"] = "incomplete_query_detected"
@@ -168,7 +172,7 @@ def upgrade_timeline(row: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optiona
     elif scenario == "incomplete_query_clarification":
         pause_indices = [
             idx for idx, item in enumerate(timeline)
-            if item.get("kind") == "clarification_wait"
+            if item.get("kind") in {"clarification_wait", "clarification_active"}
         ]
         if not pause_indices:
             raise ValueError(f"{row.get('id')}: clarification pause not found")
@@ -176,7 +180,10 @@ def upgrade_timeline(row: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optiona
         mark_f_wait_before_pause(timeline, pause_indices[0], turn_id)
         for idx in pause_indices:
             timeline[idx]["label"] = FD_IDLE
-        mode = "clarification_labels"
+            timeline[idx]["kind"] = "clarification_wait"
+        timeline[pause_indices[-1]]["label"] = FD_J_ACTIVE
+        timeline[pause_indices[-1]]["kind"] = "clarification_active"
+        mode = "clarification_active_labels"
 
     elif scenario == "player_backchannel":
         backchannel_indices = [
@@ -221,7 +228,13 @@ def process_row(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) ->
     timeline, insert_idx, mode = upgrade_timeline(row)
     expected_frames = len(timeline) * chunk_n
 
-    if not valid_wav(out_wav, sample_rate, expected_frames):
+    if args.reuse_audio:
+        if insert_idx is not None:
+            raise ValueError(f"{row.get('id')}: --reuse_audio cannot insert a new audio chunk")
+        if not valid_wav(src, sample_rate, expected_frames):
+            raise ValueError(f"{row.get('id')}: source audio/timeline length mismatch")
+        output_audio = src.resolve()
+    elif not valid_wav(out_wav, sample_rate, expected_frames):
         if insert_idx is None:
             copy_atomic(src, out_wav)
         else:
@@ -235,10 +248,13 @@ def process_row(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) ->
                 stable_int(f"continue:{row.get('id')}", args.seed),
             )
             write_pcm16_atomic(out_wav, raw[:byte_idx] + inserted + raw[byte_idx:], sample_rate)
+        output_audio = out_wav.resolve()
+    else:
+        output_audio = out_wav.resolve()
 
     reindex_timeline(timeline, chunk_n, chunk_ms)
     row["timeline"] = timeline
-    row["audio"] = str(out_wav.resolve())
+    row["audio"] = str(output_audio)
     row["label_protocol"] = PROTOCOL_NAME
     row["label_protocol_upgrade"] = {
         "from_manifest": str(args.input_manifest),
@@ -254,10 +270,13 @@ def process_row(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) ->
     return row, mode
 
 
-def write_rows(absolute: Any, relative: Any, row: Dict[str, Any]) -> None:
+def write_rows(absolute: Any, relative: Any, row: Dict[str, Any], out_dir: Path, reuse_audio: bool) -> None:
     absolute.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
     relative_row = dict(row)
-    relative_row["audio"] = str(Path("wav") / Path(str(row["audio"])).name)
+    if reuse_audio:
+        relative_row["audio"] = os.path.relpath(str(row["audio"]), start=str(out_dir.resolve()))
+    else:
+        relative_row["audio"] = str(Path("wav") / Path(str(row["audio"])).name)
     relative.write(json.dumps(relative_row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
@@ -270,6 +289,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--reuse_audio", action="store_true", help="Rewrite labels without copying unchanged WAV files.")
     args = parser.parse_args()
     if args.workers <= 0:
         raise SystemExit("--workers must be > 0")
@@ -278,7 +298,8 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     wav_dir = out_dir / "wav"
     out_dir.mkdir(parents=True, exist_ok=True)
-    wav_dir.mkdir(parents=True, exist_ok=True)
+    if not args.reuse_audio:
+        wav_dir.mkdir(parents=True, exist_ok=True)
     absolute_tmp = out_dir / "manifest.jsonl.tmp"
     relative_tmp = out_dir / "manifest_relative.jsonl.tmp"
     counts: Counter = Counter()
@@ -289,7 +310,7 @@ def main() -> None:
     def consume(future: Future[Tuple[Dict[str, Any], str]], absolute: Any, relative: Any, bar: tqdm) -> None:
         nonlocal total
         row, mode = future.result()
-        write_rows(absolute, relative, row)
+        write_rows(absolute, relative, row, out_dir, args.reuse_audio)
         counts[mode] += 1
         scenarios[str(row.get("scenario") or "unknown")] += 1
         total += 1
@@ -321,9 +342,10 @@ def main() -> None:
         "label_protocol": PROTOCOL_NAME,
         "seed": args.seed,
         "workers": args.workers,
+        "reuse_audio": args.reuse_audio,
         "manifest": str(manifest.resolve()),
         "relative_manifest": str(relative_manifest.resolve()),
-        "wav_dir": str(wav_dir.resolve()),
+        "wav_dir": None if args.reuse_audio else str(wav_dir.resolve()),
     }
     (out_dir / "upgrade_stats.json").write_text(
         json.dumps(stats, ensure_ascii=False, indent=2),
@@ -332,7 +354,11 @@ def main() -> None:
     (out_dir / "README.txt").write_text(
         "Final duplex dataset using fd_control_v1 labels.\n"
         "manifest.jsonl uses absolute audio paths; manifest_relative.jsonl uses relative paths.\n"
-        "WAV files are direct copies except backchannel rows, which add one 180 ms CONTINUE control chunk.\n",
+        + (
+            "WAV files are reused from the input dataset because this upgrade only changes labels.\n"
+            if args.reuse_audio
+            else "WAV files are direct copies except rows that require a new control chunk.\n"
+        ),
         encoding="utf-8",
     )
     print(json.dumps(stats, ensure_ascii=False, indent=2))

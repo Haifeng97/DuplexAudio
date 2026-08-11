@@ -22,6 +22,7 @@ from duplex_label_protocol import (
     FD_G_INTERRUPT,
     FD_H_CONTINUE,
     FD_IDLE,
+    FD_J_ACTIVE,
     PROTOCOL_NAME,
 )
 
@@ -514,12 +515,17 @@ def add_clarification_wait(b: Builder, args: argparse.Namespace, row: Dict[str, 
     min_sec, max_sec = float(wait_range[0]), float(wait_range[1])
     if min_sec < 0 or max_sec < 0:
         raise ValueError("clarification wait range must be non-negative")
-    chunks = random_duration_chunks(b.rng, min_sec, max_sec, args.chunk_ms)
+    chunks = max(1, random_duration_chunks(b.rng, min_sec, max_sec, args.chunk_ms))
     source = f"gn_before_turn{turn_id}_clarification"
-    b.add_noise(chunks, FD_IDLE, "clarification_wait", source, turn_id)
+    idle_chunks = chunks - 1
+    if idle_chunks:
+        b.add_noise(idle_chunks, FD_IDLE, "clarification_wait", source, turn_id)
+    b.add_noise(1, FD_J_ACTIVE, "clarification_active", source, turn_id)
     b.clarification_wait.append({
         "turn_id": turn_id,
         "chunks": chunks,
+        "idle_chunks": idle_chunks,
+        "active_chunks": 1,
         "duration_sec": round(chunks * args.chunk_ms / 1000.0, 6),
         "range_sec": [min_sec, max_sec],
         "audio_source": source,
@@ -824,6 +830,7 @@ def main() -> None:
     ap.add_argument("--disable_inter_turn_idle", action="store_true", help="Disable random IDLE between original multi-turn dialogue turns.")
     ap.add_argument("--tokenizer_json", default="tokenizers/qwen3_8b/tokenizer.json")
     ap.add_argument("--vad_mode", choices=["silero", "auto", "energy", "off"], default="silero")
+    ap.add_argument("--quiet", action="store_true", help="Disable the per-row tqdm progress bar.")
     ap.add_argument("--backchannel_vad_mode", choices=["energy", "silero"], default="energy", help="VAD used for short recorded backchannel clips.")
     ap.add_argument("--min_query_audio_sec", type=float, default=1.0, help="Skip a sample if any required query wav is shorter than this; 0 disables.")
     ap.add_argument("--min_backchannel_audio_sec", type=float, default=0.08, help="Minimum voiced backchannel duration after VAD; 0 disables.")
@@ -856,7 +863,7 @@ def main() -> None:
     n = 0
     skipped: List[Dict[str, Any]] = []
     with out_path.open("w", encoding="utf-8") as f:
-        progress = tqdm(rows, total=len(rows), dynamic_ncols=True, unit="row", desc=f"format {out_path.parent.name}")
+        progress = tqdm(rows, total=len(rows), dynamic_ncols=True, unit="row", desc=f"format {out_path.parent.name}", disable=args.quiet)
         for row in progress:
             scenario = row.get("scenario")
             if scenario not in builders:

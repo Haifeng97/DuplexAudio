@@ -12,7 +12,7 @@ Roleplay v3 的 Qwen3-TTS、真实 RAMC backchannel 和完整执行命令见
 
 - `normal_qa`：正常问答。玩家说话期间输出 `<FD_D_WAIT>`，说完后输出 `<FD_A_ANSWER>`、回复 token、`<EOR>`，再回到 `<FD_IDLE>`。如果原始数据是多轮，完整轮次之间会在 `<EOR>` 后插入 1-3 秒随机底噪 `<FD_IDLE>`。
 - `incomplete_query`：玩家 query 被切成前后两段。前半句最后一个语音 chunk 输出一次 `<FD_F_WAIT>`，中间 0.5-2 秒无语音区间输出 `<FD_IDLE>`，后半句恢复 `<FD_D_WAIT>`。完整 query 后才输出 `<FD_A_ANSWER>`。
-- `incomplete_query_clarification`：把一轮“玩家半句 query + AI 追问/确认回复”插入原对话。半句末尾输出一次 `<FD_F_WAIT>`，随后 3-5 秒随机底噪输出 `<FD_IDLE>`，再触发 `<FD_A_ANSWER>` 和澄清回复。
+- `incomplete_query_clarification`：把一轮“玩家半句 query + AI 追问/确认回复”插入原对话。半句末尾输出一次 `<FD_F_WAIT>`，随后等待 3-5 秒；等待的最后一个 chunk 输出 `<FD_J_ACTIVE>`，再触发 `<FD_A_ANSWER>` 和澄清回复。
 - `player_interrupts_ai`：只使用原始数据里真正 `history` 非空的多轮 case。后一轮玩家 query 打断前一轮 AI 未说完的回复，玩家语音首 chunk 输出 `<FD_G_INTERRUPT>`，其余语音输出 `<FD_D_WAIT>`；旧回复不输出 `<EOR>`。
 - `player_backchannel`：AI 回复中玩家插入真实短反馈音频。首 chunk 输出 `<FD_G_INTERRUPT>`，其余语音输出 `<FD_D_WAIT>`；AI 继续原回复前依次输出 `<FD_H_CONTINUE>`、`<FD_A_ANSWER>`。
 

@@ -17,6 +17,7 @@ from duplex_label_protocol import (
     FD_G_INTERRUPT,
     FD_H_CONTINUE,
     FD_IDLE,
+    FD_J_ACTIVE,
     LEGACY_LABEL_MAP,
     PROTOCOL_NAME,
     RESERVED_CONTROL_LABELS,
@@ -57,8 +58,14 @@ def protocol_errors(row: dict) -> list[str]:
     expected_f = 1 if scenario in {"incomplete_query", "incomplete_query_candidate", "incomplete_query_clarification"} else 0
     expected_g = 1 if scenario in {"player_interrupts_ai", "player_backchannel"} else 0
     expected_h = 1 if scenario == "player_backchannel" else 0
+    expected_j = 1 if scenario == "incomplete_query_clarification" else 0
 
-    for label, expected in ((FD_F_WAIT, expected_f), (FD_G_INTERRUPT, expected_g), (FD_H_CONTINUE, expected_h)):
+    for label, expected in (
+        (FD_F_WAIT, expected_f),
+        (FD_G_INTERRUPT, expected_g),
+        (FD_H_CONTINUE, expected_h),
+        (FD_J_ACTIVE, expected_j),
+    ):
         actual = labels.count(label)
         if actual != expected:
             errors.append(f"{label}_count={actual}, expected={expected}")
@@ -76,6 +83,18 @@ def protocol_errors(row: dict) -> list[str]:
     ]
     if bad_pause:
         errors.append(f"pause_not_IDLE_at={bad_pause[:5]}")
+
+    if expected_j and labels.count(FD_J_ACTIVE) == 1:
+        j_idx = labels.index(FD_J_ACTIVE)
+        if j_idx + 1 >= len(labels) or labels[j_idx + 1] != FD_A_ANSWER:
+            errors.append("J_ACTIVE_not_followed_by_A_ANSWER")
+        f_idx = labels.index(FD_F_WAIT) if FD_F_WAIT in labels else len(labels)
+        if f_idx >= j_idx:
+            errors.append("F_WAIT_not_before_J_ACTIVE")
+        elif any(label != FD_IDLE for label in labels[f_idx + 1:j_idx]):
+            errors.append("non_IDLE_between_F_WAIT_and_J_ACTIVE")
+        if timeline[j_idx].get("kind") != "clarification_active":
+            errors.append("J_ACTIVE_bad_kind")
 
     if expected_h and labels.count(FD_H_CONTINUE) == 1:
         h_idx = labels.index(FD_H_CONTINUE)

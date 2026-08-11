@@ -44,8 +44,8 @@ of random-noise `<FD_IDLE>`. No inter-turn idle is inserted inside the special
 backchannel, interrupt, or split incomplete-query event.
 
 The inserted partial-query turn in `incomplete_query_clarification` emits one
-`<FD_F_WAIT>` on the final voiced chunk, then receives 3-5 seconds of random-noise
-`<FD_IDLE>` before the assistant's clarification `<FD_A_ANSWER>`.
+`<FD_F_WAIT>` on the final voiced chunk, then waits for a random 3-5 seconds.
+The final wait chunk emits `<FD_J_ACTIVE>`, immediately followed by `<FD_A_ANSWER>`.
 
 ## Environment
 

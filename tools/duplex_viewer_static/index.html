@@ -20,6 +20,7 @@
       --interrupt: #e05260;
       --continue: #18a89f;
       --complete: #8b6fd6;
+      --proactive: #d85f9b;
       --text-token: #b76cff;
       --eor: #e9793f;
       --gn: #f2c94c;
@@ -295,6 +296,7 @@
     .chunk-cell.interrupt { background: linear-gradient(180deg, rgba(239,104,116,.9), rgba(194,55,69,.82)); }
     .chunk-cell.continue { background: linear-gradient(180deg, rgba(50,190,180,.88), rgba(18,139,132,.8)); }
     .chunk-cell.complete { background: linear-gradient(180deg, rgba(159,126,225,.88), rgba(116,82,190,.8)); }
+    .chunk-cell.proactive { background: linear-gradient(180deg, rgba(231,117,173,.9), rgba(190,65,126,.82)); }
     .chunk-cell.text { background: linear-gradient(180deg, rgba(198,132,255,.86), rgba(152,88,226,.78)); }
     .chunk-cell.eor { background: linear-gradient(180deg, rgba(239,145,75,.9), rgba(204,93,42,.82)); color: #fff8f2; }
     .chunk-cell.active { box-shadow: inset 0 0 0 2px #fff, 0 0 0 1px rgba(255,255,255,.35); }
@@ -364,6 +366,7 @@
     .seg.interrupt { background: rgba(224,82,96,.76); }
     .seg.continue { background: rgba(24,168,159,.74); }
     .seg.complete { background: rgba(139,111,214,.74); }
+    .seg.proactive { background: rgba(216,95,155,.76); }
     .seg.text { background: rgba(183,108,255,.68); }
     .seg.eor { background: rgba(233,121,63,.76); }
     .seg.gn { outline: 1px solid rgba(242,201,76,.3); }
@@ -558,7 +561,7 @@
     const $ = (id) => document.getElementById(id);
     const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
     const TIMELINE_GUTTER = 76;
-    const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<EOR>': '#e9793f' };
+    const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<FD_J_ACTIVE>': '#d85f9b', '<EOR>': '#e9793f' };
 
     function fmtSec(v) {
       const n = Number(v || 0);
@@ -744,6 +747,7 @@
                 <span><i class="dot" style="background:var(--interrupt)"></i>INTERRUPT</span>
                 <span><i class="dot" style="background:var(--continue)"></i>CONTINUE</span>
                 <span><i class="dot" style="background:var(--complete)"></i>COMPLETE</span>
+                <span><i class="dot" style="background:var(--proactive)"></i>J_ACTIVE</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
                 <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>卡的话可以关</span></label>
@@ -954,6 +958,7 @@
       if (ent.label === '<FD_G_INTERRUPT>') return 'interrupt';
       if (ent.label === '<FD_H_CONTINUE>') return 'continue';
       if (ent.label === '<FD_I_COMPLETE>') return 'complete';
+      if (ent.label === '<FD_J_ACTIVE>') return 'proactive';
       if (ent.label === '<EOR>') return 'eor';
       if (ent.label_type === 'text') return 'text';
       return 'idle';
@@ -1012,6 +1017,7 @@
       if (g.label === '<FD_G_INTERRUPT>') return 'interrupt';
       if (g.label === '<FD_H_CONTINUE>') return 'continue';
       if (g.label === '<FD_I_COMPLETE>') return 'complete';
+      if (g.label === '<FD_J_ACTIVE>') return 'proactive';
       if (g.label === '<EOR>') return 'eor';
       return g.label_type === 'text' ? 'text' : 'idle';
     }
@@ -1418,7 +1424,7 @@
       tl.forEach(ent => {
         const x = ent.idx * px;
         const cls = chunkClass(ent);
-        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'f-wait' ? 'rgba(230,162,60,.82)' : cls === 'interrupt' ? 'rgba(224,82,96,.84)' : cls === 'continue' ? 'rgba(24,168,159,.82)' : cls === 'complete' ? 'rgba(139,111,214,.82)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(233,121,63,.84)' : 'rgba(111,119,133,.58)';
+        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'f-wait' ? 'rgba(230,162,60,.82)' : cls === 'interrupt' ? 'rgba(224,82,96,.84)' : cls === 'continue' ? 'rgba(24,168,159,.82)' : cls === 'complete' ? 'rgba(139,111,214,.82)' : cls === 'proactive' ? 'rgba(216,95,155,.84)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(233,121,63,.84)' : 'rgba(111,119,133,.58)';
         const w = Math.max(1, px - 1);
         const grad = ctx.createLinearGradient(x, y, x, y + rowH);
         grad.addColorStop(0, fill);

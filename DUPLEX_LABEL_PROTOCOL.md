@@ -13,6 +13,7 @@
 | `<FD_G_INTERRUPT>` | 单次事件 | AI 回复期间检测到玩家开始说话；只标玩家语音第一个 chunk。 |
 | `<FD_H_CONTINUE>` | 单次事件 | 确认刚才的插话是 backchannel，继续原来未完成的回答。 |
 | `<FD_I_COMPLETE>` | 保留 | 当前没有对应场景，不生成。 |
+| `<FD_J_ACTIVE>` | 单次事件 | AI 在等待后决定主动发起澄清；紧接 `<FD_A_ANSWER>`。 |
 | text tokens | 内容 | AI 实际回复文本的 tokenizer tokens。 |
 | `<EOR>` | 单次事件 | 一轮 AI 回复完整结束。 |
 
@@ -56,7 +57,8 @@ text tokens+
 
 ```text
 <FD_D_WAIT>* <FD_F_WAIT>
-<FD_IDLE>+                  # 3-5 秒
+<FD_IDLE>*                  # 3-5 秒等待中的前置 chunks
+<FD_J_ACTIVE>               # 等待的最后一个 180 ms chunk，不额外增加音频
 <FD_A_ANSWER>
 clarification text tokens+
 <EOR>
@@ -107,13 +109,13 @@ text tokens <EOR>
 
 ## 场景约束
 
-| 场景 | `F_WAIT` | `G_INTERRUPT` | `H_CONTINUE` |
-| --- | ---: | ---: | ---: |
-| `normal_qa` | 0 | 0 | 0 |
-| `incomplete_query` | 1 | 0 | 0 |
-| `incomplete_query_clarification` | 1 | 0 | 0 |
-| `player_interrupts_ai` | 0 | 1 | 0 |
-| `player_backchannel` | 0 | 1 | 1 |
+| 场景 | `F_WAIT` | `G_INTERRUPT` | `H_CONTINUE` | `J_ACTIVE` |
+| --- | ---: | ---: | ---: | ---: |
+| `normal_qa` | 0 | 0 | 0 | 0 |
+| `incomplete_query` | 1 | 0 | 0 | 0 |
+| `incomplete_query_clarification` | 1 | 0 | 0 | 1 |
+| `player_interrupts_ai` | 0 | 1 | 0 | 0 |
+| `player_backchannel` | 0 | 1 | 1 | 0 |
 
 `player_backchannel` 中必须满足：
 
@@ -122,3 +124,9 @@ text tokens <EOR>
 ```
 
 `<FD_I_COMPLETE>` 在所有当前场景中的数量均为 0。
+
+`incomplete_query_clarification` 中必须满足：
+
+```text
+<FD_F_WAIT> <FD_IDLE>* <FD_J_ACTIVE> <FD_A_ANSWER>
+```
