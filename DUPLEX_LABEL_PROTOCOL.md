@@ -1,6 +1,6 @@
 # DuplexAudio 标签协议：fd_control_v1
 
-本协议规定每个固定控制 token 的语义和五类训练场景的 timeline。当前每个音频 chunk 对应一个监督 token；默认 chunk 长度为 180 ms。
+本协议规定每个固定控制 token 的语义和训练场景 timeline。当前每个音频 chunk 对应一个监督 token；默认 chunk 长度为 180 ms。
 
 ## 固定 Token
 
@@ -8,11 +8,12 @@
 | --- | --- | --- |
 | `<FD_IDLE>` | 持续状态 | 当前没有玩家语音，模型也没有输出回复 token。 |
 | `<FD_D_WAIT>` | 持续状态 | 玩家正在正常说话，模型继续听。 |
+| `<FD_C_INTERVENE>` | 单次事件 | 检测到玩家正在输出越界内容，AI 决定主动制止。 |
 | `<FD_A_ANSWER>` | 单次事件 | AI 开始或重新开始输出回复；后面才是文本 token。 |
 | `<FD_F_WAIT>` | 单次事件 | 检测到当前玩家 query 不完整；每个不完整片段只出现一次。 |
 | `<FD_G_INTERRUPT>` | 单次事件 | AI 回复期间检测到玩家开始说话；只标玩家语音第一个 chunk。 |
 | `<FD_H_CONTINUE>` | 单次事件 | 确认刚才的插话是 backchannel，继续原来未完成的回答。 |
-| `<FD_I_COMPLETE>` | 保留 | 当前没有对应场景，不生成。 |
+| `<FD_I_COMPLETE>` | 单次事件 | 检测到玩家明确结束对话或要求 AI 停止。 |
 | `<FD_J_ACTIVE>` | 单次事件 | AI 在等待后决定主动发起澄清；紧接 `<FD_A_ANSWER>`。 |
 | text tokens | 内容 | AI 实际回复文本的 tokenizer tokens。 |
 | `<EOR>` | 单次事件 | 一轮 AI 回复完整结束。 |
@@ -95,7 +96,40 @@ answer text continuation
 
 `<FD_H_CONTINUE>` 和后面的 `<FD_A_ANSWER>` 各占一个独立 chunk。前后文本属于同一轮回答，因此 prefix 后没有 `<EOR>`。
 
-## 6. 原始多轮边界
+## 6. AI 主动制止玩家
+
+```text
+<FD_D_WAIT>*                         # 玩家说到越界检测点
+<FD_C_INTERVENE>
+<FD_A_ANSWER>
+intervention text tokens+
+<EOR>
+<FD_D_WAIT>*                         # 仅当玩家剩余语音更长
+<FD_IDLE>*
+```
+
+`<FD_A_ANSWER>` 必须紧跟 `<FD_C_INTERVENE>`，并在玩家后半段仍有语音时开始。默认触发到 ANSWER 延迟为 180-540 ms，至少保留 300 ms 玩家/回复目标重叠。
+
+## 7. 玩家收尾
+
+正常收尾并简短确认：
+
+```text
+<FD_D_WAIT>+ <FD_I_COMPLETE>
+<FD_A_ANSWER> text tokens+ <EOR>
+<FD_IDLE>*
+```
+
+明确要求 AI 停止，保持静默：
+
+```text
+<FD_D_WAIT>+ <FD_I_COMPLETE>
+<FD_IDLE>+
+```
+
+静默分支在 `<FD_I_COMPLETE>` 后不得再出现 ANSWER、文本 token 或 `<EOR>`。
+
+## 8. 原始多轮边界
 
 ```text
 text tokens <EOR>
@@ -109,21 +143,21 @@ text tokens <EOR>
 
 ## 场景约束
 
-| 场景 | `F_WAIT` | `G_INTERRUPT` | `H_CONTINUE` | `J_ACTIVE` |
-| --- | ---: | ---: | ---: | ---: |
-| `normal_qa` | 0 | 0 | 0 | 0 |
-| `incomplete_query` | 1 | 0 | 0 | 0 |
-| `incomplete_query_clarification` | 1 | 0 | 0 | 1 |
-| `player_interrupts_ai` | 0 | 1 | 0 | 0 |
-| `player_backchannel` | 0 | 1 | 1 | 0 |
+| 场景 | `C_INTERVENE` | `F_WAIT` | `G_INTERRUPT` | `H_CONTINUE` | `I_COMPLETE` | `J_ACTIVE` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `normal_qa` | 0 | 0 | 0 | 0 | 0 | 0 |
+| `incomplete_query` | 0 | 1 | 0 | 0 | 0 | 0 |
+| `incomplete_query_clarification` | 0 | 1 | 0 | 0 | 0 | 1 |
+| `player_interrupts_ai` | 0 | 0 | 1 | 0 | 0 | 0 |
+| `player_backchannel` | 0 | 0 | 1 | 1 | 0 | 0 |
+| `ai_intervenes_user` | 1 | 0 | 0 | 0 | 0 | 0 |
+| `player_complete` | 0 | 0 | 0 | 0 | 1 | 0 |
 
 `player_backchannel` 中必须满足：
 
 ```text
 <FD_G_INTERRUPT> ... <FD_H_CONTINUE> <FD_A_ANSWER>
 ```
-
-`<FD_I_COMPLETE>` 在所有当前场景中的数量均为 0。
 
 `incomplete_query_clarification` 中必须满足：
 

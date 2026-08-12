@@ -9,6 +9,13 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from special_scenario_schema import (
+    AI_INTERVENES_USER,
+    PLAYER_COMPLETE,
+    SPECIAL_SCENARIOS,
+    validate_special_row,
+)
+
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -241,6 +248,70 @@ def add_turn_query_task(
     )
 
 
+def add_special_tasks(
+    tasks: List[Dict[str, Any]],
+    assets: Dict[str, Any],
+    *,
+    row: Dict[str, Any],
+    sample_id: str,
+    wav_dir: Path,
+    picker: VoicePicker,
+    tts_text_punct: bool,
+) -> None:
+    info = validate_special_row(row)
+    turns = info["turns"]
+    current = info["current"]
+    event = info["event"]
+    scenario = info["scenario"]
+    voice = picker.pick(sample_id, "special_query")
+
+    for idx, turn in enumerate(turns[:-1], start=1):
+        if turn.get("needs_tts", True):
+            add_task(
+                tasks,
+                assets,
+                sample_id=sample_id,
+                key=f"turn{idx:03d}_query",
+                text=str(turn.get("question_text") or ""),
+                wav_dir=wav_dir,
+                voice=voice,
+                tts_text_punct=tts_text_punct,
+            )
+
+    if scenario == AI_INTERVENES_USER:
+        add_task(
+            tasks,
+            assets,
+            sample_id=sample_id,
+            key="intervene_query_prefix",
+            text=str(event["user_text_until_trigger"]),
+            wav_dir=wav_dir,
+            voice=voice,
+            tts_text_punct=False,
+        )
+        add_task(
+            tasks,
+            assets,
+            sample_id=sample_id,
+            key="intervene_query_suffix",
+            text=str(event["user_text_after_trigger"]),
+            wav_dir=wav_dir,
+            voice=voice,
+            tts_text_punct=False,
+        )
+    elif scenario == PLAYER_COMPLETE:
+        add_task(
+            tasks,
+            assets,
+            sample_id=sample_id,
+            key="complete_query",
+            text=str(current.get("question_text") or ""),
+            wav_dir=wav_dir,
+            voice=voice,
+            tts_text_punct=tts_text_punct,
+        )
+
+
 def attach_assets(
     row: Dict[str, Any],
     wav_dir: Path,
@@ -254,7 +325,17 @@ def attach_assets(
     scenario = out.get("scenario")
     assets: Dict[str, Any] = {}
 
-    if scenario in {"normal_qa", "incomplete_query_clarification"}:
+    if scenario in SPECIAL_SCENARIOS:
+        add_special_tasks(
+            tasks,
+            assets,
+            row=out,
+            sample_id=sample_id,
+            wav_dir=wav_dir,
+            picker=picker,
+            tts_text_punct=tts_text_punct,
+        )
+    elif scenario in {"normal_qa", "incomplete_query_clarification"}:
         turns = out.get("turns")
         if isinstance(turns, list) and len(turns) > 1:
             for idx, turn in enumerate(turns, start=1):

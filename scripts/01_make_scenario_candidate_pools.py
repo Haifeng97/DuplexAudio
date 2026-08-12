@@ -8,6 +8,15 @@ import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from special_scenario_schema import (
+    AI_INTERVENES_USER,
+    PLAYER_COMPLETE,
+    SCHEMA_VERSION,
+    SpecialScenarioError,
+    is_special_row,
+    normalize_special_row,
+)
+
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -404,6 +413,7 @@ def main() -> None:
     ap.add_argument("--min_interrupt_answer_chars", type=int, default=8)
     ap.add_argument("--min_backchannel_answer_chars", type=int, default=8)
     ap.add_argument("--min_incomplete_prefix_chars", type=int, default=3)
+    ap.add_argument("--min_intervene_suffix_chars", type=int, default=6)
     ap.add_argument("--min_question_chars", type=int, default=1)
     ap.add_argument("--max_question_chars", type=int, default=240)
     ap.add_argument("--max_answer_chars", type=int, default=360)
@@ -418,8 +428,33 @@ def main() -> None:
     rng = random.Random(args.seed)
     input_rows = read_jsonl(Path(args.input))
     rows = []
+    special_pools: Dict[str, List[Dict[str, Any]]] = {
+        AI_INTERVENES_USER: [],
+        PLAYER_COMPLETE: [],
+    }
+    special_seen = 0
     normalization_stats: Dict[str, int] = {}
     for row in input_rows:
+        if is_special_row(row) or row.get("schema_version") == SCHEMA_VERSION:
+            special_seen += 1
+            try:
+                normalized, row_stats = normalize_special_row(
+                    row,
+                    min_question_chars=args.min_question_chars,
+                    max_question_chars=args.max_question_chars,
+                    max_answer_chars=args.max_answer_chars,
+                    max_turns=args.max_turns,
+                    min_intervene_suffix_cjk=args.min_intervene_suffix_chars,
+                )
+            except SpecialScenarioError as exc:
+                key = f"special_skip_{exc.code}"
+                normalization_stats[key] = normalization_stats.get(key, 0) + 1
+                continue
+            for key, value in row_stats.items():
+                stat_key = f"special_{key}"
+                normalization_stats[stat_key] = normalization_stats.get(stat_key, 0) + value
+            special_pools[str(normalized["scenario"])].append(normalized)
+            continue
         normalized, row_stats = normalize_row(
             row,
             min_question_chars=args.min_question_chars,
@@ -463,9 +498,15 @@ def main() -> None:
     rng.shuffle(interrupt_donor_pool)
     rng.shuffle(backchannel_pool)
     rng.shuffle(incomplete_pool)
+    for special_pool in special_pools.values():
+        rng.shuffle(special_pool)
 
     limit_each = args.limit_each if args.limit_each > 0 else None
     normal_rows = [normal_candidate(r, args.chunk_ms) for r in normal_pool[:limit_each]]
+    intervene_rows = special_pools[AI_INTERVENES_USER][:limit_each]
+    complete_rows = special_pools[PLAYER_COMPLETE][:limit_each]
+    special_rows = intervene_rows + complete_rows
+    rng.shuffle(special_rows)
 
     interrupt_rows = []
     if args.interrupt_pair_mode == "same_row_previous":
@@ -517,12 +558,14 @@ def main() -> None:
         "input": str(Path(args.input)),
         "out_dir": str(out_dir),
         "input_rows": len(input_rows),
+        "special_input_rows": special_seen,
         "rows": len(rows),
         "normalization": {
             "min_question_chars": args.min_question_chars,
             "max_question_chars": args.max_question_chars,
             "max_answer_chars": args.max_answer_chars,
             "max_turns": args.max_turns,
+            "min_intervene_suffix_chars": args.min_intervene_suffix_chars,
             "stats": normalization_stats,
         },
         "require_history": bool(args.require_history),
@@ -538,10 +581,15 @@ def main() -> None:
         "backchannel_manifest": args.backchannel_manifest,
         "backchannel_clips": len(backchannel_clips),
         "incomplete_pool": len(incomplete_pool),
+        "intervene_pool": len(special_pools[AI_INTERVENES_USER]),
+        "complete_pool": len(special_pools[PLAYER_COMPLETE]),
         "normal_written": write_jsonl(out_dir / "normal_qa_candidates.jsonl", normal_rows),
         "interrupt_written": write_jsonl(out_dir / "player_interrupt_candidates.jsonl", interrupt_rows),
         "backchannel_written": write_jsonl(out_dir / "player_backchannel_candidates.jsonl", backchannel_rows),
         "incomplete_written": write_jsonl(out_dir / "incomplete_query_candidates.jsonl", incomplete_rows),
+        "intervene_written": write_jsonl(out_dir / "ai_intervenes_user_candidates.jsonl", intervene_rows),
+        "complete_written": write_jsonl(out_dir / "player_complete_candidates.jsonl", complete_rows),
+        "special_combined_written": write_jsonl(out_dir / "special_scenarios_candidates.jsonl", special_rows),
     }
     (out_dir / "candidate_pool_stats.json").write_text(json.dumps(counts, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(counts, ensure_ascii=False, indent=2))

@@ -365,3 +365,67 @@ answer_speaker = null
 - Silent Complete 的 `answer_text` 和 `answer_speaker` 均为 `null`。
 - 整体 Complete 数据约 `70% acknowledge / 30% silent`。
 - 所有需要朗读的字段不含标签、Markdown、动作描述和说话人前缀。
+
+## 8. DuplexAudio 执行流程
+
+候选池脚本可以直接读取只含特殊场景或与旧中间格式混合的 JSONL。特殊场景会按 schema 校验并写入独立文件，旧场景继续走原有候选生成逻辑。
+
+```bash
+python scripts/01_make_scenario_candidate_pools.py \
+  --input dataset/special_or_mixed.jsonl \
+  --out_dir outputs/special_pipeline/candidates
+```
+
+两个特殊场景的合并候选文件为：
+
+```text
+outputs/special_pipeline/candidates/special_scenarios_candidates.jsonl
+```
+
+`02_make_turn_tts_tasks.py` 和 `04_format_duplex_manifest.py` 都支持 mixed scenario JSONL，因此后续可以保持一个 index：
+
+```bash
+python scripts/02_make_turn_tts_tasks.py \
+  --input outputs/special_pipeline/candidates/special_scenarios_candidates.jsonl \
+  --out_dir outputs/special_pipeline/tts
+```
+
+Qwen3-TTS 默认使用按估计长度排序的 128 条原生 batch。每条样本仍保留独立参考音频 prompt：
+
+```bash
+PROJECT=Cgame_aimate_haifengjia \
+python scripts/03_run_tts_multi_gpu.py \
+  --engine qwen3_tts \
+  --tasks outputs/special_pipeline/tts/tts_tasks.jsonl \
+  --work_dir outputs/special_pipeline/tts \
+  --gpus 4,5,6,7 \
+  --procs_per_gpu 1 \
+  --batch_size 128 \
+  --python /data/haifengjia/miniforge3/envs/qwen3-tts/bin/python \
+  --model_dir /data/haifengjia/models/Qwen3-TTS-12Hz-1.7B-Base \
+  --language Chinese \
+  --dtype bfloat16 \
+  --attn_implementation flash_attention_2
+```
+
+TTS 可按有效 WAV 断点续跑。batch 推理失败会明确写入结果，不会自动降级成单条推理。
+
+```bash
+python scripts/04_format_duplex_manifest.py \
+  --index outputs/special_pipeline/tts/scenario_index.jsonl \
+  --out outputs/special_pipeline/final/manifest.jsonl \
+  --wav_dir outputs/special_pipeline/final/wav \
+  --sample_rate 24000 \
+  --chunk_ms 180 \
+  --tokenizer_json tokenizers/qwen3_8b/tokenizer.json \
+  --vad_mode silero \
+  --min_query_audio_sec 1.0 \
+  --min_intervene_suffix_audio_sec 1.0 \
+  --min_intervene_overlap_sec 0.3
+
+python scripts/05_validate_duplex_manifest.py \
+  --manifest outputs/special_pipeline/final/manifest.jsonl \
+  --show 3
+```
+
+Intervene 的 TTS 触发前后段会分别 VAD trim，再无静音间隔地拼接。最终 WAV 只承载玩家语音和底噪；AI 的 Intervene、ANSWER、文本 token 与 EOR 是覆盖在同一 chunk 时间轴上的训练目标。无法满足反应延迟或重叠约束的样本写入 `manifest.jsonl.skipped.jsonl`。

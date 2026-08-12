@@ -17,13 +17,20 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from duplex_label_protocol import (
     EOR,
     FD_A_ANSWER,
+    FD_C_INTERVENE,
     FD_D_WAIT,
     FD_F_WAIT,
     FD_G_INTERRUPT,
     FD_H_CONTINUE,
     FD_IDLE,
+    FD_I_COMPLETE,
     FD_J_ACTIVE,
     PROTOCOL_NAME,
+)
+from special_scenario_schema import (
+    AI_INTERVENES_USER,
+    PLAYER_COMPLETE,
+    validate_special_row,
 )
 
 
@@ -554,6 +561,311 @@ def add_complete_turn(b: Builder, assets: Dict[str, Any], turn: Dict[str, Any], 
     b.add_answer(answer_text, turn_id, f"turn{turn_id}_answer_gn", min_chunks=b.answer_region_chunks(answer_text))
 
 
+def load_trimmed_query_samples(
+    b: Builder,
+    path: str,
+    turn_id: int,
+    source: str,
+    *,
+    min_audio_sec: float,
+) -> List[int]:
+    samples = read_wav_mono_pcm16(Path(path), b.sample_rate)
+    original_duration_sec = len(samples) / b.sample_rate if b.sample_rate else 0.0
+    if min_audio_sec > 0 and original_duration_sec < min_audio_sec:
+        raise ValueError(
+            f"query_audio_too_short path={path} "
+            f"duration_sec={original_duration_sec:.6f} "
+            f"min_audio_sec={min_audio_sec:.6f}"
+        )
+    samples, vad_meta = b.vad.process(samples, b.rng, trim_silence=True)
+    processed_duration_sec = len(samples) / b.sample_rate if b.sample_rate else 0.0
+    if min_audio_sec > 0 and processed_duration_sec < min_audio_sec:
+        raise ValueError(
+            f"query_audio_too_short_after_vad path={path} "
+            f"duration_sec={processed_duration_sec:.6f} "
+            f"min_audio_sec={min_audio_sec:.6f}"
+        )
+    vad_meta.update({
+        "path": path,
+        "source": source,
+        "turn_id": turn_id,
+        "chunk_padding_noise_sec": 0.0,
+    })
+    b.query_vad.append(vad_meta)
+    return samples
+
+
+def replace_control_target(
+    b: Builder,
+    idx: int,
+    label: str,
+    kind: str,
+    target_source: str,
+    turn_id: int,
+) -> None:
+    if idx < 0 or idx >= len(b.timeline):
+        raise ValueError(f"control target idx={idx} is outside existing player audio")
+    audio_source = str(b.timeline[idx].get("audio_source") or target_source)
+    item = entry(idx, label, kind, b.chunk_n, b.chunk_ms, audio_source, turn_id)
+    item["target_source"] = target_source
+    b.timeline[idx] = item
+
+
+def overlay_answer_targets(
+    b: Builder,
+    text: str,
+    turn_id: int,
+    source: str,
+    start_idx: int,
+) -> int:
+    units = b.tokenizer.encode(text)
+    targets: List[Dict[str, Any]] = [
+        entry(start_idx, FD_A_ANSWER, "answer_trigger", b.chunk_n, b.chunk_ms, source, turn_id)
+    ]
+    for offset, unit in enumerate(units, start=1):
+        targets.append(
+            text_entry(
+                start_idx + offset,
+                unit,
+                offset - 1,
+                b.chunk_n,
+                b.chunk_ms,
+                source,
+                turn_id,
+            )
+        )
+    eor_idx = start_idx + len(targets)
+    eor = text_entry(
+        eor_idx,
+        {"token_id": None, "token_text": EOR},
+        len(units),
+        b.chunk_n,
+        b.chunk_ms,
+        source,
+        turn_id,
+    )
+    eor.update({"kind": "eor", "label": EOR, "token_text": EOR})
+    targets.append(eor)
+
+    for target in targets:
+        idx = int(target["idx"])
+        if idx >= len(b.timeline):
+            b.audio.extend(gaussian_noise(1, b.chunk_n, b.rng, b.noise_rms))
+            b.timeline.append(
+                entry(
+                    len(b.timeline),
+                    FD_IDLE,
+                    "answer_tail_idle",
+                    b.chunk_n,
+                    b.chunk_ms,
+                    source,
+                    turn_id,
+                )
+            )
+        audio_source = str(b.timeline[idx].get("audio_source") or source)
+        target["audio_source"] = audio_source
+        target["target_source"] = source
+        b.timeline[idx] = target
+    return eor_idx
+
+
+def add_special_history(
+    b: Builder,
+    args: argparse.Namespace,
+    row: Dict[str, Any],
+    turns: List[Dict[str, Any]],
+    assets: Dict[str, Any],
+) -> None:
+    for idx, turn in enumerate(turns[:-1]):
+        add_complete_turn(b, assets, turn, idx, f"turn{idx + 1:03d}_query")
+        add_inter_turn_idle(b, args, row, idx + 1, idx + 2)
+
+
+def build_intervene(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
+    info = validate_special_row(row)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
+    add_initial_idle(b, args)
+    assets = row["tts_assets"]
+    turns = info["turns"]
+    current = info["current"]
+    add_special_history(b, args, row, turns, assets)
+
+    turn_id = len(turns)
+    prefix = load_trimmed_query_samples(
+        b,
+        assets["intervene_query_prefix"]["audio"],
+        turn_id,
+        "intervene_query_prefix_audio",
+        min_audio_sec=args.min_query_audio_sec,
+    )
+    suffix = load_trimmed_query_samples(
+        b,
+        assets["intervene_query_suffix"]["audio"],
+        turn_id,
+        "intervene_query_suffix_audio",
+        min_audio_sec=args.min_intervene_suffix_audio_sec,
+    )
+    start_idx = b.idx()
+    start_sample = len(b.audio)
+    trigger_sample = start_sample + len(prefix)
+    player_samples = prefix + suffix
+    player_samples, player_chunks = pad_to_chunks(player_samples, b.chunk_n)
+    padding_samples = player_chunks * b.chunk_n - len(prefix) - len(suffix)
+    if padding_samples:
+        player_samples[-padding_samples:] = gaussian_noise_samples(
+            padding_samples,
+            b.rng,
+            b.noise_rms,
+        )
+    b.audio.extend(player_samples)
+    for local_idx in range(player_chunks):
+        chunk_start = local_idx * b.chunk_n
+        chunk_end = chunk_start + b.chunk_n
+        if chunk_end <= len(prefix):
+            source = "intervene_query_prefix_audio"
+        elif chunk_start >= len(prefix):
+            source = "intervene_query_suffix_audio"
+        else:
+            source = "intervene_trigger_boundary_audio"
+        b.timeline.append(
+            entry(
+                b.idx(),
+                FD_D_WAIT,
+                "wait",
+                b.chunk_n,
+                b.chunk_ms,
+                source,
+                turn_id,
+            )
+        )
+
+    player_end_sample = start_sample + len(prefix) + len(suffix)
+    player_end_sec = player_end_sample / b.sample_rate
+    trigger_time_sec = trigger_sample / b.sample_rate
+    trigger_chunk_idx = trigger_sample // b.chunk_n
+    candidates: List[Tuple[int, int, float, float]] = []
+    for reaction_chunks in range(
+        args.intervene_reaction_chunks_min,
+        args.intervene_reaction_chunks_max + 1,
+    ):
+        intervene_idx = trigger_chunk_idx + reaction_chunks
+        answer_idx = intervene_idx + 1
+        answer_start_sec = answer_idx * b.chunk_n / b.sample_rate
+        delay_sec = answer_start_sec - trigger_time_sec
+        overlap_sec = player_end_sec - answer_start_sec
+        if not (args.intervene_answer_delay_sec_min <= delay_sec <= args.intervene_answer_delay_sec_max):
+            continue
+        if overlap_sec < args.min_intervene_overlap_sec:
+            continue
+        if start_idx <= intervene_idx < start_idx + player_chunks:
+            candidates.append((intervene_idx, answer_idx, delay_sec, overlap_sec))
+    if not candidates:
+        raise ValueError(
+            "intervene_timing_unresolvable "
+            f"trigger_time_sec={trigger_time_sec:.6f} "
+            f"player_end_sec={player_end_sec:.6f}"
+        )
+    intervene_idx, answer_idx, delay_sec, overlap_sec = b.rng.choice(candidates)
+    replace_control_target(
+        b,
+        intervene_idx,
+        FD_C_INTERVENE,
+        "intervene",
+        "intervene_target",
+        turn_id,
+    )
+    answer_text = str(current.get("answer_text") or "")
+    eor_idx = overlay_answer_targets(
+        b,
+        answer_text,
+        turn_id,
+        "intervene_answer_target",
+        answer_idx,
+    )
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
+    write_wav_pcm16(out_wav, b.audio, args.sample_rate)
+    manifest = common_manifest(row, out_wav, b, AI_INTERVENES_USER)
+    manifest["intervention"] = {
+        "trigger_time_sec": round(trigger_time_sec, 6),
+        "trigger_sample": trigger_sample,
+        "trigger_chunk_idx": trigger_chunk_idx,
+        "intervene_chunk_idx": intervene_idx,
+        "reaction_delay_chunks": intervene_idx - trigger_chunk_idx,
+        "reaction_delay_sec": round(delay_sec, 6),
+        "answer_delay_range_sec": [
+            args.intervene_answer_delay_sec_min,
+            args.intervene_answer_delay_sec_max,
+        ],
+        "answer_start_chunk_idx": answer_idx,
+        "answer_start_sec": round(answer_idx * args.chunk_ms / 1000.0, 6),
+        "answer_eor_chunk_idx": eor_idx,
+        "player_end_sec": round(player_end_sec, 6),
+        "player_end_sample": player_end_sample,
+        "overlap_sec": round(overlap_sec, 6),
+        "suffix_voiced_sec": round(len(suffix) / b.sample_rate, 6),
+        "min_required_overlap_sec": args.min_intervene_overlap_sec,
+        "chunk_padding_noise_sec": round(padding_samples / b.sample_rate, 6),
+    }
+    return manifest
+
+
+def build_complete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
+    info = validate_special_row(row)
+    b = Builder(
+        args.sample_rate,
+        args.chunk_ms,
+        args.noise_rms,
+        stable_seed(row["id"]),
+        args.text_tokenizer,
+        args.vad_processor,
+        args.min_query_audio_sec,
+    )
+    add_initial_idle(b, args)
+    assets = row["tts_assets"]
+    turns = info["turns"]
+    current = info["current"]
+    event = info["event"]
+    add_special_history(b, args, row, turns, assets)
+
+    turn_id = len(turns)
+    b.add_query_audio(
+        assets["complete_query"]["audio"],
+        turn_id,
+        "complete_query_audio",
+        trim_silence=True,
+    )
+    b.add_noise(1, FD_I_COMPLETE, "complete", "complete_target_gn", turn_id)
+    response_mode = str(event["response_mode"])
+    if response_mode == "acknowledge":
+        answer_text = str(current.get("answer_text") or "")
+        b.add_answer(
+            answer_text,
+            turn_id,
+            "complete_answer_gn",
+            min_chunks=b.answer_region_chunks(answer_text),
+        )
+    b.add_noise(args.final_idle_chunks, FD_IDLE, "final_idle", "gn_after")
+    write_wav_pcm16(out_wav, b.audio, args.sample_rate)
+    manifest = common_manifest(row, out_wav, b, PLAYER_COMPLETE)
+    manifest["completion"] = {
+        "completion_type": event["completion_type"],
+        "response_mode": response_mode,
+        "complete_chunk_idx": next(
+            item["idx"] for item in b.timeline if item.get("label") == FD_I_COMPLETE
+        ),
+        "answer_trained": response_mode == "acknowledge",
+    }
+    return manifest
+
+
 def build_normal(row: Dict[str, Any], out_wav: Path, args: argparse.Namespace) -> Dict[str, Any]:
     b = Builder(
         args.sample_rate,
@@ -769,8 +1081,18 @@ def build_incomplete(row: Dict[str, Any], out_wav: Path, args: argparse.Namespac
 
 
 def common_manifest(row: Dict[str, Any], out_wav: Path, b: Builder, scenario: str) -> Dict[str, Any]:
-    answer = row.get("answer_text") or row.get("answer_text_if_complete") or row.get("donor", {}).get("answer_text", "")
-    question = row.get("question_text") or row.get("full_question_text") or row.get("donor", {}).get("question_text", "")
+    turns = [turn for turn in (row.get("turns") or []) if isinstance(turn, dict)]
+    current = turns[-1] if turns else {}
+    answer = (
+        row.get("answer_text")
+        if "answer_text" in row
+        else row.get("answer_text_if_complete") or row.get("donor", {}).get("answer_text") or current.get("answer_text")
+    )
+    question = (
+        row.get("question_text") or row.get("full_question_text")
+        or row.get("donor", {}).get("question_text") or current.get("question_text") or ""
+    )
+    answer = answer or ""
     return {
         "id": row["id"],
         "source": "cgame_duplex",
@@ -834,7 +1156,23 @@ def main() -> None:
     ap.add_argument("--backchannel_vad_mode", choices=["energy", "silero"], default="energy", help="VAD used for short recorded backchannel clips.")
     ap.add_argument("--min_query_audio_sec", type=float, default=1.0, help="Skip a sample if any required query wav is shorter than this; 0 disables.")
     ap.add_argument("--min_backchannel_audio_sec", type=float, default=0.08, help="Minimum voiced backchannel duration after VAD; 0 disables.")
+    ap.add_argument("--min_intervene_suffix_audio_sec", type=float, default=1.0, help="Minimum voiced user suffix after the Intervene trigger.")
+    ap.add_argument("--min_intervene_overlap_sec", type=float, default=0.3, help="Required user/AI-target overlap after ANSWER starts.")
+    ap.add_argument("--intervene_reaction_chunks_min", type=int, default=0, help="Minimum candidate chunk offset from trigger chunk to INTERVENE.")
+    ap.add_argument("--intervene_reaction_chunks_max", type=int, default=2, help="Maximum candidate chunk offset from trigger chunk to INTERVENE.")
+    ap.add_argument("--intervene_answer_delay_sec_min", type=float, default=0.18, help="Minimum actual trigger-to-ANSWER delay.")
+    ap.add_argument("--intervene_answer_delay_sec_max", type=float, default=0.54, help="Maximum actual trigger-to-ANSWER delay.")
     args = ap.parse_args()
+    if args.intervene_reaction_chunks_min < 0:
+        ap.error("--intervene_reaction_chunks_min must be >= 0")
+    if args.intervene_reaction_chunks_max < args.intervene_reaction_chunks_min:
+        ap.error("--intervene_reaction_chunks_max must be >= --intervene_reaction_chunks_min")
+    if args.intervene_answer_delay_sec_min < 0:
+        ap.error("--intervene_answer_delay_sec_min must be >= 0")
+    if args.intervene_answer_delay_sec_max < args.intervene_answer_delay_sec_min:
+        ap.error("--intervene_answer_delay_sec_max must be >= --intervene_answer_delay_sec_min")
+    if args.min_intervene_overlap_sec < 0:
+        ap.error("--min_intervene_overlap_sec must be >= 0")
 
     tokenizer_json = Path(args.tokenizer_json) if args.tokenizer_json else None
     if tokenizer_json and not tokenizer_json.is_absolute():
@@ -859,6 +1197,8 @@ def main() -> None:
         "player_interrupts_ai": build_interrupt,
         "player_backchannel": build_backchannel,
         "incomplete_query_candidate": build_incomplete,
+        AI_INTERVENES_USER: build_intervene,
+        PLAYER_COMPLETE: build_complete,
     }
     n = 0
     skipped: List[Dict[str, Any]] = []
