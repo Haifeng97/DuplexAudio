@@ -16,6 +16,7 @@
       --idle: #6f7785;
       --wait: #2f80ed;
       --answer: #27ae60;
+      --intervene: #f05a7e;
       --f-wait: #e6a23c;
       --interrupt: #e05260;
       --continue: #18a89f;
@@ -294,6 +295,7 @@
     .chunk-cell.answer { background: linear-gradient(180deg, rgba(66,202,128,.84), rgba(35,158,88,.76)); }
     .chunk-cell.f-wait { background: linear-gradient(180deg, rgba(242,184,86,.88), rgba(207,137,35,.8)); }
     .chunk-cell.interrupt { background: linear-gradient(180deg, rgba(239,104,116,.9), rgba(194,55,69,.82)); }
+    .chunk-cell.intervene { background: linear-gradient(180deg, rgba(245,112,145,.92), rgba(192,51,94,.84)); }
     .chunk-cell.continue { background: linear-gradient(180deg, rgba(50,190,180,.88), rgba(18,139,132,.8)); }
     .chunk-cell.complete { background: linear-gradient(180deg, rgba(159,126,225,.88), rgba(116,82,190,.8)); }
     .chunk-cell.proactive { background: linear-gradient(180deg, rgba(231,117,173,.9), rgba(190,65,126,.82)); }
@@ -364,6 +366,7 @@
     .seg.answer { background: rgba(39,174,96,.72); }
     .seg.f-wait { background: rgba(230,162,60,.74); }
     .seg.interrupt { background: rgba(224,82,96,.76); }
+    .seg.intervene { background: rgba(240,90,126,.8); }
     .seg.continue { background: rgba(24,168,159,.74); }
     .seg.complete { background: rgba(139,111,214,.74); }
     .seg.proactive { background: rgba(216,95,155,.76); }
@@ -561,7 +564,7 @@
     const $ = (id) => document.getElementById(id);
     const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
     const TIMELINE_GUTTER = 76;
-    const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<FD_J_ACTIVE>': '#d85f9b', '<EOR>': '#e9793f' };
+    const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_C_INTERVENE>': '#f05a7e', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<FD_J_ACTIVE>': '#d85f9b', '<EOR>': '#e9793f' };
 
     function fmtSec(v) {
       const n = Number(v || 0);
@@ -743,6 +746,7 @@
                 <span><i class="dot" style="background:var(--idle)"></i>IDLE</span>
                 <span><i class="dot" style="background:var(--wait)"></i>D_WAIT</span>
                 <span><i class="dot" style="background:var(--answer)"></i>ANSWER</span>
+                <span><i class="dot" style="background:var(--intervene)"></i>INTERVENE</span>
                 <span><i class="dot" style="background:var(--f-wait)"></i>F_WAIT</span>
                 <span><i class="dot" style="background:var(--interrupt)"></i>INTERRUPT</span>
                 <span><i class="dot" style="background:var(--continue)"></i>CONTINUE</span>
@@ -955,6 +959,7 @@
       if (ent.label === 'IDLE' || ent.label === '<FD_IDLE>') return 'idle';
       if (ent.label === 'ANSWER' || ent.label === '<FD_A_ANSWER>') return 'answer';
       if (ent.label === '<FD_F_WAIT>') return 'f-wait';
+      if (ent.label === '<FD_C_INTERVENE>') return 'intervene';
       if (ent.label === '<FD_G_INTERRUPT>') return 'interrupt';
       if (ent.label === '<FD_H_CONTINUE>') return 'continue';
       if (ent.label === '<FD_I_COMPLETE>') return 'complete';
@@ -1014,6 +1019,7 @@
       if (g.label === 'IDLE' || g.label === '<FD_IDLE>') return 'idle';
       if (g.label === 'ANSWER' || g.label === '<FD_A_ANSWER>') return 'answer';
       if (g.label === '<FD_F_WAIT>') return 'f-wait';
+      if (g.label === '<FD_C_INTERVENE>') return 'intervene';
       if (g.label === '<FD_G_INTERRUPT>') return 'interrupt';
       if (g.label === '<FD_H_CONTINUE>') return 'continue';
       if (g.label === '<FD_I_COMPLETE>') return 'complete';
@@ -1424,7 +1430,7 @@
       tl.forEach(ent => {
         const x = ent.idx * px;
         const cls = chunkClass(ent);
-        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'f-wait' ? 'rgba(230,162,60,.82)' : cls === 'interrupt' ? 'rgba(224,82,96,.84)' : cls === 'continue' ? 'rgba(24,168,159,.82)' : cls === 'complete' ? 'rgba(139,111,214,.82)' : cls === 'proactive' ? 'rgba(216,95,155,.84)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(233,121,63,.84)' : 'rgba(111,119,133,.58)';
+        const fill = cls === 'wait' ? 'rgba(47,128,237,.82)' : cls === 'answer' ? 'rgba(39,174,96,.82)' : cls === 'intervene' ? 'rgba(240,90,126,.86)' : cls === 'f-wait' ? 'rgba(230,162,60,.82)' : cls === 'interrupt' ? 'rgba(224,82,96,.84)' : cls === 'continue' ? 'rgba(24,168,159,.82)' : cls === 'complete' ? 'rgba(139,111,214,.82)' : cls === 'proactive' ? 'rgba(216,95,155,.84)' : cls === 'text' ? 'rgba(183,108,255,.82)' : cls === 'eor' ? 'rgba(233,121,63,.84)' : 'rgba(111,119,133,.58)';
         const w = Math.max(1, px - 1);
         const grad = ctx.createLinearGradient(x, y, x, y + rowH);
         grad.addColorStop(0, fill);
