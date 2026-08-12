@@ -173,6 +173,16 @@ def main() -> None:
     ap.add_argument("--language", default="Chinese")
     ap.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     ap.add_argument("--attn_implementation", choices=["flash_attention_2", "sdpa", "eager"], default="flash_attention_2")
+    ap.add_argument("--batch_size", type=int, default=128, help="Native Qwen3-TTS batch size per worker.")
+    ap.add_argument("--max_new_tokens", type=int, default=0, help="Fixed Qwen codec-token limit; 0 derives per batch.")
+    ap.add_argument("--min_audio_sec", type=float, default=1.0)
+    ap.add_argument("--max_audio_floor_sec", type=float, default=10.0)
+    ap.add_argument("--max_sec_per_char", type=float, default=1.2)
+    ap.add_argument("--generation_guard_sec", type=float, default=5.0)
+    ap.add_argument("--codec_frame_rate", type=float, default=12.0)
+    ap.add_argument("--max_new_tokens_cap", type=int, default=2048)
+    ap.add_argument("--shuffle_batches", action="store_true", help="Shuffle length-bucketed batch order.")
+    ap.add_argument("--shuffle_seed", type=int, default=42)
     ap.add_argument("--progress_every", type=int, default=50)
     ap.add_argument("--project", default=os.environ.get("PROJECT", ""))
     ap.add_argument("--python", default=sys.executable, help="Python executable to run workers; default is current Python.")
@@ -199,6 +209,19 @@ def main() -> None:
         raise SystemExit("--gpus is empty")
     if args.procs_per_gpu <= 0:
         raise SystemExit("--procs_per_gpu must be > 0")
+    if args.batch_size <= 0:
+        raise SystemExit("--batch_size must be > 0")
+    if args.max_new_tokens < 0:
+        raise SystemExit("--max_new_tokens must be >= 0")
+    if min(
+        args.min_audio_sec,
+        args.max_audio_floor_sec,
+        args.max_sec_per_char,
+        args.codec_frame_rate,
+    ) <= 0 or args.generation_guard_sec < 0:
+        raise SystemExit("audio quality and dynamic max_new_tokens parameters are invalid")
+    if args.max_new_tokens_cap <= 0:
+        raise SystemExit("--max_new_tokens_cap must be > 0")
     worker_count = len(gpus) * args.procs_per_gpu
 
     lines = read_nonempty_lines(tasks_path)
@@ -221,7 +244,22 @@ def main() -> None:
         if args.engine == "cosyvoice":
             cmd.extend(["--cosyvoice_repo", args.cosyvoice_repo])
         else:
-            cmd.extend(["--language", args.language, "--dtype", args.dtype, "--attn_implementation", args.attn_implementation])
+            cmd.extend([
+                "--language", args.language,
+                "--dtype", args.dtype,
+                "--attn_implementation", args.attn_implementation,
+                "--batch_size", str(args.batch_size),
+                "--max_new_tokens", str(args.max_new_tokens),
+                "--min_audio_sec", str(args.min_audio_sec),
+                "--max_audio_floor_sec", str(args.max_audio_floor_sec),
+                "--max_sec_per_char", str(args.max_sec_per_char),
+                "--generation_guard_sec", str(args.generation_guard_sec),
+                "--codec_frame_rate", str(args.codec_frame_rate),
+                "--max_new_tokens_cap", str(args.max_new_tokens_cap),
+                "--shuffle_seed", str(args.shuffle_seed + worker_idx),
+            ])
+            if args.shuffle_batches:
+                cmd.append("--shuffle_batches")
         if args.overwrite:
             cmd.append("--overwrite")
         commands.append((worker_idx, gpu, cmd, log_path, shard_path, result_path))
@@ -234,6 +272,21 @@ def main() -> None:
         "work_dir": str(work_dir),
         "gpus": gpus,
         "procs_per_gpu": args.procs_per_gpu,
+        "batch_size": args.batch_size if args.engine == "qwen3_tts" else None,
+        "max_new_tokens": args.max_new_tokens if args.engine == "qwen3_tts" else None,
+        "min_audio_sec": args.min_audio_sec if args.engine == "qwen3_tts" else None,
+        "max_audio_floor_sec": args.max_audio_floor_sec if args.engine == "qwen3_tts" else None,
+        "max_sec_per_char": args.max_sec_per_char if args.engine == "qwen3_tts" else None,
+        "generation_guard_sec": args.generation_guard_sec if args.engine == "qwen3_tts" else None,
+        "codec_frame_rate": args.codec_frame_rate if args.engine == "qwen3_tts" else None,
+        "max_new_tokens_cap": args.max_new_tokens_cap if args.engine == "qwen3_tts" else None,
+        "shuffle_batches": args.shuffle_batches if args.engine == "qwen3_tts" else None,
+        "shuffle_seed": args.shuffle_seed if args.engine == "qwen3_tts" else None,
+        "worker_shuffle_seeds": (
+            [args.shuffle_seed + idx for idx in range(worker_count)]
+            if args.engine == "qwen3_tts" and args.shuffle_batches
+            else None
+        ),
         "workers": worker_count,
         "project": args.project,
         "shards": [str(p) for p in shard_paths],

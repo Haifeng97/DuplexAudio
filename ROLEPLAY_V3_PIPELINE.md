@@ -164,12 +164,18 @@ python scripts/03_run_tts_multi_gpu.py \
   --procs_per_gpu 1 \
   --python /data/haifengjia/miniforge3/envs/qwen3-tts/bin/python \
   --model_dir /data/haifengjia/models/Qwen3-TTS-12Hz-1.7B-Base \
+  --batch_size 128 \
   --language Chinese \
   --dtype bfloat16 \
   --attn_implementation flash_attention_2 \
   --monitor_every 0.5 \
   --progress_every 50
 ```
+
+Each worker sorts its pending tasks by estimated synthesis length, then sends
+up to `--batch_size` texts and their per-sample voice-clone prompts through one
+native Qwen3-TTS batch call. Batch errors are reported directly; the worker does
+not silently fall back to scalar inference.
 
 The worker resumes from valid output WAV files. Restarting with a different
 `--procs_per_gpu` reshards all tasks, records existing WAVs as `cached`, and only
