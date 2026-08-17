@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 outputs/
+dataset/
+from_node6/
+external_fwait_alignment_runtime/
