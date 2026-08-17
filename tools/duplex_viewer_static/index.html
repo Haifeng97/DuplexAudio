@@ -455,6 +455,25 @@
       max-height: 220px;
       overflow: auto;
     }
+    .description-list { display: grid; gap: 0; }
+    .description-block {
+      padding: 14px 16px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .description-block:last-child { border-bottom: 0; }
+    .description-title {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .description-text {
+      color: #e3eaf3;
+      font-size: 13px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .token-strip {
       display: flex;
       flex-wrap: wrap;
@@ -782,6 +801,11 @@
           </section>
 
           <section class="panel" style="grid-column: 1 / -1">
+            ${(row.scene_description || row.voice_description) ? `
+              <div class="description-list">
+                ${row.scene_description ? `<div class="description-block"><div class="description-title">整体场景描述</div><div class="description-text">${esc(row.scene_description)}</div></div>` : ''}
+                ${row.voice_description ? `<div class="description-block"><div class="description-title">AI 声音特征</div><div class="description-text">${esc(row.voice_description)}</div></div>` : ''}
+              </div>` : ''}
             <details open><summary>Sysprompt</summary><div class="text-box">${esc(row.sysprompt || '')}</div></details>
             <details><summary>Source Row JSON</summary><pre>${esc(JSON.stringify(row.source_row || {}, null, 2))}</pre></details>
             <details><summary>Manifest Row JSON</summary><pre>${esc(JSON.stringify({...row, source_row: undefined}, null, 2))}</pre></details>
