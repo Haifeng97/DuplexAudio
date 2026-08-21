@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-from duplex_label_protocol import EOR, FD_G_INTERRUPT
+from duplex_label_protocol import EOR, FD_D_WAIT, FD_G_INTERRUPT, FD_IDLE
 
 
 SCHEMA_VERSION = "duplex_multimodal_enrichment_v1"
@@ -136,8 +136,8 @@ def load_filled(
             if len(voice) > 240:
                 raise ValueError(f"{sample_id}: normalized voice_description has {len(voice)} chars, max=240")
         descriptions = row.get("turn_descriptions")
-        if not isinstance(descriptions, list) or not descriptions:
-            raise ValueError(f"{sample_id}: turn_descriptions must be non-empty")
+        if not isinstance(descriptions, list):
+            raise ValueError(f"{sample_id}: turn_descriptions must be a list")
         actions: Dict[int, str] = {}
         for item in descriptions:
             if not isinstance(item, dict):
@@ -251,6 +251,75 @@ def text_entry(token: Dict[str, Any], text_idx: int, turn_id: int) -> Dict[str, 
     }
 
 
+def _uses_live_input_audio(item: Dict[str, Any]) -> bool:
+    return str(item.get("audio_source") or "").endswith("_audio")
+
+
+def _with_audio_source(entry: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    output = dict(entry)
+    output["audio_source"] = str(source.get("audio_source") or "action_expression_gn")
+    return output
+
+
+def apply_action_tokens(
+    timeline: List[Dict[str, Any]],
+    chunks: List[bytes],
+    position: int,
+    mode: str,
+    inserted_timeline: List[Dict[str, Any]],
+    inserted_chunks: List[bytes],
+) -> Tuple[str, Counter]:
+    counts: Counter = Counter()
+    if mode == "before_interrupt":
+        # The interrupted answer never reaches its appended action text. Inserting it here
+        # would delay both the interrupt label and the player's audio.
+        counts["metadata_only_interrupted"] += 1
+        counts["omitted_interrupted_action_tokens"] += len(inserted_timeline)
+        return "metadata_only_interrupted", counts
+
+    if mode != "before_eor" or not _uses_live_input_audio(timeline[position]):
+        timeline[position:position] = inserted_timeline
+        chunks[position:position] = inserted_chunks
+        counts[mode] += 1
+        counts["inserted_action_tokens"] += len(inserted_timeline)
+        counts["inserted_action_audio_chunks"] += len(inserted_chunks)
+        return mode, counts
+
+    # An intervene answer is emitted while the player is still speaking. Reuse the
+    # existing input chunks after EOR for action tokens, then add any required padding
+    # only after that contiguous speech/state run. This preserves the player's waveform.
+    reusable = 0
+    for item in timeline[position + 1:]:
+        if item.get("label") not in {FD_D_WAIT, FD_IDLE}:
+            break
+        reusable += 1
+    reused = min(len(inserted_timeline), reusable)
+    segment_end = position + 1 + reused
+    extra = len(inserted_timeline) - reused
+
+    source_entries = [dict(item) for item in timeline[position:segment_end]]
+    source_entries.extend(
+        {"audio_source": "action_expression_gn"} for _ in range(extra)
+    )
+    replacement = [
+        _with_audio_source(entry, source_entries[idx])
+        for idx, entry in enumerate(inserted_timeline)
+    ]
+    moved_eor = _with_audio_source(dict(timeline[position]), source_entries[-1])
+    replacement.append(moved_eor)
+
+    preserved_chunks = list(chunks[position:segment_end])
+    preserved_chunks.extend(inserted_chunks[reused:])
+    timeline[position:segment_end] = replacement
+    chunks[position:segment_end] = preserved_chunks
+
+    counts["overlap_reused"] += 1
+    counts["inserted_action_tokens"] += len(inserted_timeline)
+    counts["reused_input_audio_chunks"] += reused + 1
+    counts["inserted_action_audio_chunks"] += extra
+    return "overlap_reused_before_eor", counts
+
+
 def reindex_timeline(timeline: List[Dict[str, Any]], chunk_n: int, chunk_ms: int) -> None:
     for idx, item in enumerate(timeline):
         item["idx"] = idx
@@ -283,6 +352,7 @@ def upgrade_row(
     timeline = [dict(item) for item in row.get("timeline") or []]
     chunks = read_wav_chunks(Path(str(row["audio"])), sample_rate, chunk_n, len(timeline))
     positions = insertion_positions(timeline, expected_turn_ids)
+    applied_modes: Dict[int, str] = {}
     counts: Counter = Counter()
 
     for turn_id, (position, mode) in sorted(positions.items(), key=lambda item: item[1][0], reverse=True):
@@ -301,13 +371,23 @@ def upgrade_row(
             noise_bank.get(chunk_n, noise_rms, f"{row['id']}:{turn_id}:{idx}")
             for idx in range(len(tokens))
         ]
-        timeline[position:position] = inserted_timeline
-        chunks[position:position] = inserted_chunks
-        following_idx = position + len(tokens)
-        if mode == "before_eor" and timeline[following_idx].get("label") == EOR:
-            timeline[following_idx]["text_token_idx"] = text_idx + len(tokens)
-        counts[mode] += 1
-        counts["inserted_action_tokens"] += len(tokens)
+        applied_mode, action_counts = apply_action_tokens(
+            timeline,
+            chunks,
+            position,
+            mode,
+            inserted_timeline,
+            inserted_chunks,
+        )
+        applied_modes[turn_id] = applied_mode
+        counts.update(action_counts)
+        if applied_mode in {"before_eor", "overlap_reused_before_eor"}:
+            eor_idx = next(
+                idx for idx in range(position, len(timeline))
+                if timeline[idx].get("label") == EOR
+                and int(timeline[idx].get("turn_id") or 0) == turn_id
+            )
+            timeline[eor_idx]["text_token_idx"] = text_idx + len(tokens)
 
     reindex_timeline(timeline, chunk_n, chunk_ms)
     write_wav_atomic(out_wav, chunks, sample_rate)
@@ -321,7 +401,7 @@ def upgrade_row(
             "turn_id": turn_id,
             "action_expression": actions[turn_id],
             "wrapped_text": f"（{actions[turn_id]}）",
-            "insertion": positions[turn_id][1],
+            "insertion": applied_modes[turn_id],
         }
         for turn_id in expected_turn_ids
     ]
@@ -363,7 +443,8 @@ def upgrade_row(
     output["multimodal_enrichment"] = {
         "schema_version": SCHEMA_VERSION,
         "action_token_count": counts["inserted_action_tokens"],
-        "audio_padding": "gaussian_noise_per_inserted_action_token",
+        "metadata_only_action_token_count": counts["omitted_interrupted_action_tokens"],
+        "audio_padding": "overlap_preserving",
         "noise_rms": noise_rms,
     }
     stats = dict(output.get("stats") or {})
