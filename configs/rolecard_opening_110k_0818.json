@@ -1,0 +1,59 @@
+{
+  "run_name": "rolecard_opening_110k_0818",
+  "run_dir": "runs/rolecard_opening_110k_0818",
+  "rolecard_generation": {
+    "archive": "dataset/rolecards_and_openings/role_cards_and_opening_queries_20260818_001.zip",
+    "role_cards_member": "all_filtered_plain_text_role_cards_43715_with_feasibility_20241213_filter_short_prompt.json",
+    "opening_members": ["extended_queries_20250611.json", "extended_queries_20250729.json"],
+    "seed": 20260818,
+    "fixed_role_samples": 11000,
+    "random_role_samples": 55000,
+    "random_assistant_roles": 5000,
+    "player_roles": 10000,
+    "min_turns": 1,
+    "max_turns": 5,
+    "special_ratio": 0.05,
+    "max_answer_chars": 50,
+    "dialogue_pilot_samples": 500,
+    "opening_min_chars": 4,
+    "opening_max_chars": 60,
+    "fixed_description_variants": 20,
+    "xiaotian_fixed_description_ratio": 0.10,
+    "excluded_role_categories": ["政治家", "宗教"],
+    "complete_opening_terms": ["再见", "先这样", "回头聊", "先下了", "到这", "别说", "闭嘴", "不用回复", "结束", "不聊了"],
+    "fixed_roles": [
+      {"name": "小田", "persona_config": "configs/xiaotian_multimodal_1200.json"},
+      {"name": "吉莉", "persona_manifest": "/nfs/shared_data/ai_partner_duplex/v2/manifest.jsonl", "match": "请你扮演吉莉"},
+      {"name": "伞兵", "persona_manifest": "/nfs/shared_data/ai_partner_duplex/v2/manifest.jsonl", "match": "请你扮演伞兵"},
+      {"name": "阿梅", "persona_manifest": "/nfs/shared_data/ai_partner_duplex/v2/manifest.jsonl", "match": "请你扮演阿梅"},
+      {"name": "花傲天", "persona_manifest": "/nfs/shared_data/ai_partner_duplex/v2/manifest.jsonl", "match": "请你扮演花傲天"}
+    ],
+    "xiaotian_fixed_description": {
+      "scene_description": "明亮温暖的影棚布光下的室内探险主题场景，画面干净、高饱和，带商业广告质感。小田身穿白色抹胸裙、棕色皮质束带、宽檐探险帽，笑容灿烂地站在中央，身后是做旧藏宝地图挂布与白色雕花栏杆，竖构图中近景。",
+      "voice_description": "说话时的声音特征：年轻女性音色，清脆明亮、略带气声，中高音，标准普通话无明显口音，语气活泼俏皮、真性情爽朗，语速中等偏快、轻快带节奏，兴奋时音调上扬、句尾常带俏皮上翘尾音。"
+    }
+  },
+  "inputs": {
+    "customized": [{"path": "runs/rolecard_opening_110k_0818/00_rolecard_generation/customized.jsonl", "namespace": "rolecard_opening_0818", "source_version": "0818", "kind": "customized"}],
+    "special": [{"path": "runs/rolecard_opening_110k_0818/00_rolecard_generation/special.jsonl", "namespace": "rolecard_opening_special_0818", "source_version": "0818", "kind": "special"}]
+  },
+  "base_manifests": [],
+  "base_counts": {"normal_qa": 0, "player_interrupts_ai": 0, "incomplete_query": 0, "incomplete_query_clarification": 0, "player_backchannel": 0, "other": 0},
+  "normalization": {"max_question_chars": 240, "max_answer_chars": 80, "future_generated_answer_effective_chars": 50, "keep_database": false},
+  "ratios": {"normal_qa": 0.70, "player_interrupts_ai": 0.15, "incomplete_query": 0.04, "incomplete_query_clarification": 0.01, "player_backchannel": 0.05, "other": 0.05},
+  "planning": {"seed": 20260818, "min_backchannel_answer_chars": 8, "mix_secondary_scenarios": false, "special_split": {"ai_intervenes_user": 0.5, "player_complete": 0.5}},
+  "assets": {"backchannel_manifest": "outputs/roleplay_zh_v3/backchannel_corpus/backchannels.jsonl"},
+  "format": {"chunk_ms": 180, "sample_rate": 24000, "tokenizer_json": "tokenizers/qwen3_8b/tokenizer.json", "vad_mode": "silero"},
+  "llm": {
+    "backend": "offline", "candidate_count": 5, "min_incomplete_prefix_effective_chars": 3, "max_incomplete_prefix_effective_chars": 14,
+    "clarification_wait_sec_min": 3.0, "clarification_wait_sec_max": 5.0,
+    "dsv4": {"base_url": "https://nlp.guangzi.qq.com/api11/openapi", "model": "cgame_aimate_generater", "api_key_env": "DSV4_API_KEY", "wsid_env": "DSV4_WSID", "timeout_sec": 300, "max_tokens": 4096, "temperature": 0, "top_p": 1, "top_k": 20, "repetition_penalty": 1.0, "thinking": false, "openai_infer": true}
+  },
+  "tts": {
+    "engine": "qwen3_tts", "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "model_version": "Qwen3-TTS-12Hz-1.7B-Base", "language": "Chinese", "sample_rate": 24000, "batch_size": 128,
+    "generation": {"dtype": "bfloat16", "attn_implementation": "flash_attention_2", "generation_guard_sec": 5.0, "max_audio_floor_sec": 10.0, "max_sec_per_char": 0.4, "codec_frame_rate": 12.0, "max_new_tokens_cap": 2048}
+  },
+  "tts_validation": {"enabled": true, "model": "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn", "gpus": [4, 5, 6, 7], "batch_size": 64, "bucket_size": 1024, "max_cer": 0.65, "min_coverage": 0.25, "min_target_chars": 4, "progress_every": 1000},
+  "tts_tasks": {"voice_bank": "outputs/esd_voice_bank_zh_neutral60/voice_bank.jsonl", "voice_strategy": "sample_hash", "voice_seed": 42, "max_voice_refs": 0, "max_ref_text_chars": 12, "min_ref_snr": 0.0, "tts_text_punct": true},
+  "release": {"customized_root": "/nfs/shared_data/rolecard_opening_duplex_0818/v1/customized", "special_root": "/nfs/shared_data/rolecard_opening_duplex_0818/v1/special", "balanced_root": "/nfs/shared_data/rolecard_opening_duplex_0818/v1", "copy_base_wav": false, "absolute_wav_paths": true, "rebalance_after_filter": false, "rebalance_seed": 20260818}
+}
