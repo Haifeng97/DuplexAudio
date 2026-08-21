@@ -108,8 +108,9 @@ def max_audio_sec_for_task(
     *,
     max_audio_floor_sec: float,
     max_sec_per_char: float,
+    duration_guard_sec: float = 0.0,
 ) -> float:
-    return max(max_audio_floor_sec, text_units(task) * max_sec_per_char)
+    return max(max_audio_floor_sec, text_units(task) * max_sec_per_char + duration_guard_sec)
 
 
 def audio_quality_error(
@@ -121,6 +122,7 @@ def audio_quality_error(
     max_sec_per_char: float,
     token_limit: int = 0,
     codec_frame_rate: float = 12.0,
+    duration_guard_sec: float = 0.0,
 ) -> str:
     if duration_sec < min_audio_sec:
         return "audio_too_short"
@@ -130,6 +132,7 @@ def audio_quality_error(
         task,
         max_audio_floor_sec=max_audio_floor_sec,
         max_sec_per_char=max_sec_per_char,
+        duration_guard_sec=duration_guard_sec,
     ):
         return "audio_too_long_for_text"
     return ""
@@ -221,6 +224,7 @@ def main() -> None:
             min_audio_sec=args.min_audio_sec,
             max_audio_floor_sec=args.max_audio_floor_sec,
             max_sec_per_char=args.max_sec_per_char,
+            duration_guard_sec=args.generation_guard_sec,
         ) if duration_sec is not None else "invalid_wav"
         if duration_sec is not None and not cache_error and not args.overwrite:
             append_jsonl(
@@ -370,6 +374,7 @@ def main() -> None:
                         max_sec_per_char=args.max_sec_per_char,
                         token_limit=token_limit,
                         codec_frame_rate=args.codec_frame_rate,
+                        duration_guard_sec=args.generation_guard_sec,
                     )
                     if quality_error:
                         record({
@@ -382,6 +387,7 @@ def main() -> None:
                                 task,
                                 max_audio_floor_sec=args.max_audio_floor_sec,
                                 max_sec_per_char=args.max_sec_per_char,
+                                duration_guard_sec=args.generation_guard_sec,
                             ),
                             "batch_index": batch_index,
                             "batch_size": len(ready_tasks),

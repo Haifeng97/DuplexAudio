@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, Iterator, List
 
 from special_scenario_schema import (
     AI_INTERVENES_USER,
@@ -24,6 +24,15 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
             if line.strip():
                 rows.append(json.loads(line))
     return rows
+
+
+def iter_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
+    with path.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.strip():
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    yield row
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
@@ -537,6 +546,7 @@ def main() -> None:
     ap.add_argument("--min_ref_snr", type=float, default=0.0, help="Drop refs below this SNR; 0 disables")
     ap.add_argument("--tts_text_punct", action="store_true", help="Add terminal punctuation to TTS text only")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--streaming", action="store_true", help="Write tasks/index incrementally without loading all rows into memory.")
     ap.set_defaults(**defaults)
     args = ap.parse_args()
 
@@ -545,11 +555,6 @@ def main() -> None:
     wav_dir = out_dir / "query_wav"
     wav_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = read_jsonl(in_path)
-    if args.limit:
-        rows = rows[: args.limit]
-
-    tasks: List[Dict[str, Any]] = []
     voice_refs = load_voice_refs(
         args.voice_bank,
         max_voice_refs=args.max_voice_refs,
@@ -563,15 +568,32 @@ def main() -> None:
         strategy=args.voice_strategy,
         seed=args.voice_seed,
     )
-    index_rows = [
-        attach_assets(row, wav_dir, picker, tasks, tts_text_punct=bool(args.tts_text_punct))
-        for row in rows
-    ]
-
     tasks_path = out_dir / "tts_tasks.jsonl"
     index_path = out_dir / "scenario_index.jsonl"
-    n_tasks = write_jsonl(tasks_path, tasks)
-    n_index = write_jsonl(index_path, index_rows)
+    if args.streaming:
+        n_tasks = n_index = 0
+        with tasks_path.open("w", encoding="utf-8") as task_handle, index_path.open("w", encoding="utf-8") as index_handle:
+            for row in iter_jsonl(in_path):
+                if args.limit and n_index >= args.limit:
+                    break
+                row_tasks: List[Dict[str, Any]] = []
+                index_row = attach_assets(row, wav_dir, picker, row_tasks, tts_text_punct=bool(args.tts_text_punct))
+                for task in row_tasks:
+                    task_handle.write(json.dumps(task, ensure_ascii=False, separators=(",", ":")) + "\n")
+                    n_tasks += 1
+                index_handle.write(json.dumps(index_row, ensure_ascii=False, separators=(",", ":")) + "\n")
+                n_index += 1
+    else:
+        rows = read_jsonl(in_path)
+        if args.limit:
+            rows = rows[: args.limit]
+        tasks: List[Dict[str, Any]] = []
+        index_rows = [
+            attach_assets(row, wav_dir, picker, tasks, tts_text_punct=bool(args.tts_text_punct))
+            for row in rows
+        ]
+        n_tasks = write_jsonl(tasks_path, tasks)
+        n_index = write_jsonl(index_path, index_rows)
     print(json.dumps({
         "input": str(in_path),
         "out_dir": str(out_dir),
@@ -586,6 +608,7 @@ def main() -> None:
         "max_ref_text_chars": int(args.max_ref_text_chars),
         "min_ref_snr": float(args.min_ref_snr),
         "tts_text_punct": bool(args.tts_text_punct),
+        "streaming": bool(args.streaming),
     }, ensure_ascii=False, indent=2))
 
 
