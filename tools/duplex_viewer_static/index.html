@@ -901,11 +901,15 @@
       scroller.scrollTo({ left: nextLeft, behavior: 'auto' });
       window.setTimeout(() => { state.programmaticScroll = false; }, 80);
     }
-    function setAxisCanvasSize(canvas, cssWidth, cssHeight) {
+    function setAxisCanvasSize(canvas, cssWidth, cssHeight, highDpi = true) {
       if (!canvas) return;
-      const dpr = 1;
+      const requestedDpr = highDpi ? Math.max(1, Math.min(2, window.devicePixelRatio || 1)) : 1;
+      const maxBackingDimension = 32767;
+      const dpr = cssWidth * requestedDpr <= maxBackingDimension && cssHeight * requestedDpr <= maxBackingDimension ? requestedDpr : 1;
       canvas.style.width = `${cssWidth}px`;
       canvas.style.height = `${cssHeight}px`;
+      canvas.dataset.cssWidth = String(cssWidth);
+      canvas.dataset.cssHeight = String(cssHeight);
       const bw = Math.max(1, Math.round(cssWidth * dpr));
       const bh = Math.max(1, Math.round(cssHeight * dpr));
       if (canvas.width !== bw) canvas.width = bw;
@@ -919,7 +923,7 @@
       if (track) track.style.width = (width + TIMELINE_GUTTER) + 'px';
       setAxisCanvasSize($('timeAxis'), width, 34);
       setAxisCanvasSize($('wave'), width, 132);
-      setAxisCanvasSize($('mel'), width, 220);
+      setAxisCanvasSize($('mel'), width, 220, false);
       ['timeAxis', 'wave', 'mel'].forEach(id => {
         const el = $(id);
         if (el) el.style.marginLeft = TIMELINE_GUTTER + 'px';
@@ -975,7 +979,7 @@
     function drawTimeAxis() {
       const canvas = $('timeAxis');
       if (!canvas) return;
-      drawTimeAxisCanvas(canvas, canvas.width, canvas.height);
+      drawTimeAxisCanvas(canvas, Number(canvas.dataset.cssWidth) || canvas.clientWidth, Number(canvas.dataset.cssHeight) || canvas.clientHeight);
     }
     function chunkClass(ent) {
       if (!ent) return 'idle';
@@ -1066,7 +1070,14 @@
       state.audioAbort?.abort();
       state.audioAbort = null;
       try {
-        state.waveform = await api(state.item._viewer.waveform_url || `/api/waveform?manifest=${state.manifestKey}&index=${state.item._viewer.index}&width=1600`);
+        const chunks = state.item?.timeline?.length || 1;
+        const waveformWidth = Math.max(1600, Math.min(32768, chunks * 96));
+        const waveformUrl = new URL(
+          state.item._viewer.waveform_url || `/api/waveform?manifest=${state.manifestKey}&index=${state.item._viewer.index}`,
+          window.location.href,
+        );
+        waveformUrl.searchParams.set('width', String(waveformWidth));
+        state.waveform = await api(waveformUrl.pathname + waveformUrl.search);
         if (seq !== state.loadSeq) return;
       } catch (e) {
         console.warn(e);

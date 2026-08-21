@@ -225,7 +225,7 @@ def row_audio_path(row: Dict[str, Any]) -> Path:
 
 
 def waveform_payload(audio_path: Path, width: int = 1600) -> Dict[str, Any]:
-    width = max(64, min(4096, int(width)))
+    width = max(64, min(32768, int(width)))
     st = audio_path.stat()
     cache_key = (str(audio_path), st.st_mtime_ns, st.st_size, width)
     cached = WAVEFORM_CACHE.get(cache_key)
