@@ -581,7 +581,9 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
+    const LONG_AUDIO_MEL_LIMIT_SEC = 180;
+    const state = { manifests: [], manifestKey: 0, items: [], item: null, waveform: null, audioBuffer: null, mel: null, melEnabled: true, melAutoSuppressed: false, melComputing: false, melProgress: 0, activeIdx: -1, zoom: 32, loadSeq: 0, waveformError: '', audioAbort: null, autoFollow: true, programmaticScroll: false };
+    function melActive() { return state.melEnabled && !state.melAutoSuppressed; }
     const TIMELINE_GUTTER = 76;
     const colors = { IDLE: '#6f7785', '<FD_IDLE>': '#6f7785', WAIT: '#2f80ed', '<FD_D_WAIT>': '#2f80ed', ANSWER: '#27ae60', '<FD_A_ANSWER>': '#27ae60', '<FD_C_INTERVENE>': '#f05a7e', '<FD_F_WAIT>': '#e6a23c', '<FD_G_INTERRUPT>': '#e05260', '<FD_H_CONTINUE>': '#18a89f', '<FD_I_COMPLETE>': '#8b6fd6', '<FD_J_ACTIVE>': '#d85f9b', '<EOR>': '#e9793f' };
 
@@ -686,17 +688,18 @@
       try {
         state.item = await api(`/api/item?manifest=${state.manifestKey}&index=${index}`);
         if (seq !== state.loadSeq) return;
+        state.melAutoSuppressed = Number(state.item?.stats?.duration_sec || 0) > LONG_AUDIO_MEL_LIMIT_SEC;
         state.activeIdx = -1;
         state.autoFollow = true;
         state.waveformError = '';
         renderItem();
         drawWaveform(0);
-        if (state.melEnabled) drawMelSpectrogram(0);
+        if (melActive()) drawMelSpectrogram(0);
         await loadWaveform(seq);
         if (seq !== state.loadSeq) return;
         renderWaveformNotice();
         drawWaveform(0);
-        if (state.melEnabled) {
+        if (melActive()) {
           drawMelSpectrogram(0);
           loadAudioForMel(seq);
         }
@@ -773,7 +776,7 @@
                 <span><i class="dot" style="background:var(--proactive)"></i>J_ACTIVE</span>
                 <span><i class="dot" style="background:var(--text-token)"></i>TEXT</span>
                 <span><i class="dot" style="background:var(--eor)"></i>EOR</span>
-                <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${state.melEnabled ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>卡的话可以关</span></label>
+                <label class="switch-row" title="Mel spectrogram can be expensive; turn it off if the page feels slow."><span>Mel</span><span class="switch"><input id="melToggle" type="checkbox" ${melActive() ? 'checked' : ''}><span class="switch-track"></span><span class="switch-thumb"></span></span><span>卡的话可以关</span></label>
               </div>
             </div>
             <div class="panel-body">
@@ -781,7 +784,7 @@
                 <div class="timeline-track" id="timelineTrack">
                   <canvas id="timeAxis" class="axis-canvas" width="1600" height="34"></canvas>
                   <canvas id="wave" class="axis-canvas" width="1600" height="220"></canvas>
-                  <canvas id="mel" class="axis-canvas ${state.melEnabled ? '' : 'is-hidden'}" width="1600" height="320"></canvas>
+                  <canvas id="mel" class="axis-canvas ${melActive() ? '' : 'is-hidden'}" width="1600" height="320"></canvas>
                   <div id="chunkAxis" class="chunk-axis"></div>
                   <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
                 </div>
@@ -854,9 +857,10 @@
       bindSeekCanvas($('mel'));
       $('melToggle').onchange = (e) => {
         state.melEnabled = e.target.checked;
+        if (state.melEnabled) state.melAutoSuppressed = false;
         const mel = $('mel');
-        if (mel) mel.classList.toggle('is-hidden', !state.melEnabled);
-        if (state.melEnabled) {
+        if (mel) mel.classList.toggle('is-hidden', !melActive());
+        if (melActive()) {
           drawMelSpectrogram($('audio')?.currentTime || 0);
           loadAudioForMel(state.loadSeq);
         } else {
@@ -1085,7 +1089,7 @@
       }
     }
     async function loadAudioForMel(seq) {
-      if (!state.melEnabled || state.audioBuffer || state.audioAbort) return;
+      if (!melActive() || state.audioBuffer || state.audioAbort) return;
       state.audioAbort = new AbortController();
       try {
         const res = await fetchWithRetry(state.item._viewer.audio_url, { signal: state.audioAbort.signal }, 1, 45000);
@@ -1094,7 +1098,7 @@
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         state.audioBuffer = await ctx.decodeAudioData(arr.slice(0));
         await ctx.close();
-        if (seq === state.loadSeq && state.melEnabled) drawMelSpectrogram($('audio')?.currentTime || 0);
+        if (seq === state.loadSeq && melActive()) drawMelSpectrogram($('audio')?.currentTime || 0);
       } catch (e) {
         if (e?.name !== 'AbortError') {
           console.warn(e);
@@ -1235,7 +1239,7 @@
     }
     function drawMelStatus(message, progress = 0) {
       const c = $('mel');
-      if (!c || !state.melEnabled) return;
+      if (!c || !melActive()) return;
       const ctx = c.getContext('2d'), w = c.clientWidth || c.width, h = c.clientHeight || c.height;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#0d1219';
@@ -1279,7 +1283,7 @@
       });
     }
     function drawMelSpectrogram(currentTime = 0) {
-      if (!state.melEnabled) return;
+      if (!melActive()) return;
       const c = $('mel');
       if (!c) return;
       const ctx = c.getContext('2d'), w = c.clientWidth || c.width, h = c.clientHeight || c.height;
@@ -1484,7 +1488,7 @@
       const width = timelineWidth();
       const px = chunkPixelWidth(width);
       const timeAxis = $('timeAxis'), wave = $('wave'), mel = $('mel');
-      const timeH = 34, waveH = 132, melH = state.melEnabled ? 220 : 0, tokenH = 136, gap = 10;
+      const timeH = 34, waveH = 132, melH = melActive() ? 220 : 0, tokenH = 136, gap = 10;
       const height = timeH + 8 + waveH + gap + melH + (melH ? gap : 0) + tokenH;
       const out = document.createElement('canvas');
       out.width = width;
