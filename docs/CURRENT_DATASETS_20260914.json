@@ -7,15 +7,6 @@
     "chunk_ms": 180,
     "label_protocol": "fd_control_v1"
   },
-  "historical_combined": {
-    "name": "Duplex Balanced 0818 v3",
-    "manifest": "/nfs/shared_data/duplex_balanced_0818/v3/manifest.jsonl",
-    "rows": 1423071,
-    "audio_hours": 17077.9155,
-    "duplicate_ids": 0,
-    "includes_ai_partner_version": "v6",
-    "includes_rolecard_opening_v1": false
-  },
   "latest_separate": [
     {
       "name": "AI Partner v7",
