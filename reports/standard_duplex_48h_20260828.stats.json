@@ -1,0 +1,114 @@
+{
+  "schema_version": "duplex_dataset_inventory_v1",
+  "length_definition": "Unicode characters excluding whitespace; punctuation retained; measured per turn",
+  "label_definition": "All timeline entries with label_type=text are TEXT; other entries retain their control label",
+  "manifests": {
+    "standard_duplex_48h_local": "/data/haifengjia/Projects/DuplexAudio/outputs/standard_duplex_48h_20260828/v1/manifest.jsonl"
+  },
+  "datasets": {
+    "standard_duplex_48h_local": {
+      "rows": 4203,
+      "audio_duration_sec_sum": 98003.70000000008,
+      "audio_duration_sec_min": 3.96,
+      "audio_duration_sec_max": 72.36,
+      "turn_count_sum": 12359,
+      "turn_count_min": 1,
+      "turn_count_max": 5,
+      "query_count": 12359,
+      "query_chars_sum": 193933,
+      "query_chars_min": 4,
+      "query_chars_max": 93,
+      "answer_count": 12359,
+      "answer_chars_sum": 244670,
+      "answer_chars_min": 0,
+      "answer_chars_max": 47,
+      "scenario_counts": {
+        "normal_qa": 3127,
+        "player_interrupts_ai": 626,
+        "player_backchannel": 209,
+        "player_complete": 111,
+        "ai_intervenes_user": 110,
+        "incomplete_query": 16,
+        "incomplete_query_clarification": 4
+      },
+      "label_counts": {
+        "<FD_D_WAIT>": 222253,
+        "TEXT": 179187,
+        "<FD_IDLE>": 117513,
+        "<FD_A_ANSWER>": 12529,
+        "<EOR>": 11694,
+        "<FD_G_INTERRUPT>": 835,
+        "<FD_H_CONTINUE>": 209,
+        "<FD_I_COMPLETE>": 111,
+        "<FD_C_INTERVENE>": 110,
+        "<FD_F_WAIT>": 20,
+        "<FD_J_ACTIVE>": 4
+      },
+      "source_namespace_counts": {
+        "standard_duplex_48h_0828": 3982,
+        "standard_duplex_special_48h_0828": 221
+      },
+      "source_dataset_counts": {
+        "rolecard_opening_generated": 4203
+      },
+      "parse_errors": 0,
+      "audio_total_hours": 27.2233,
+      "audio_duration_sec_avg": 23.3176,
+      "turn_count_avg": 2.9405,
+      "query_chars_avg": 15.6916,
+      "answer_chars_avg": 19.7969
+    }
+  },
+  "combined": {
+    "rows": 4203,
+    "audio_duration_sec_sum": 98003.70000000008,
+    "audio_duration_sec_min": 3.96,
+    "audio_duration_sec_max": 72.36,
+    "turn_count_sum": 12359,
+    "turn_count_min": 1,
+    "turn_count_max": 5,
+    "query_count": 12359,
+    "query_chars_sum": 193933,
+    "query_chars_min": 4,
+    "query_chars_max": 93,
+    "answer_count": 12359,
+    "answer_chars_sum": 244670,
+    "answer_chars_min": 0,
+    "answer_chars_max": 47,
+    "scenario_counts": {
+      "normal_qa": 3127,
+      "player_interrupts_ai": 626,
+      "player_backchannel": 209,
+      "player_complete": 111,
+      "ai_intervenes_user": 110,
+      "incomplete_query": 16,
+      "incomplete_query_clarification": 4
+    },
+    "label_counts": {
+      "<FD_D_WAIT>": 222253,
+      "TEXT": 179187,
+      "<FD_IDLE>": 117513,
+      "<FD_A_ANSWER>": 12529,
+      "<EOR>": 11694,
+      "<FD_G_INTERRUPT>": 835,
+      "<FD_H_CONTINUE>": 209,
+      "<FD_I_COMPLETE>": 111,
+      "<FD_C_INTERVENE>": 110,
+      "<FD_F_WAIT>": 20,
+      "<FD_J_ACTIVE>": 4
+    },
+    "source_namespace_counts": {
+      "standard_duplex_48h_0828": 3982,
+      "standard_duplex_special_48h_0828": 221
+    },
+    "source_dataset_counts": {
+      "rolecard_opening_generated": 4203
+    },
+    "parse_errors": 0,
+    "audio_total_hours": 27.2233,
+    "audio_duration_sec_avg": 23.3176,
+    "turn_count_avg": 2.9405,
+    "query_chars_avg": 15.6916,
+    "answer_chars_avg": 19.7969
+  }
+}
