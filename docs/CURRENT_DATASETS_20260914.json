@@ -1,0 +1,117 @@
+{
+  "updated_at": "2026-09-14",
+  "owner": "haifengjia",
+  "format": {
+    "sample_rate": 24000,
+    "channels": 1,
+    "chunk_ms": 180,
+    "label_protocol": "fd_control_v1"
+  },
+  "historical_combined": {
+    "name": "Duplex Balanced 0818 v3",
+    "manifest": "/nfs/shared_data/duplex_balanced_0818/v3/manifest.jsonl",
+    "rows": 1423071,
+    "audio_hours": 17077.9155,
+    "duplicate_ids": 0,
+    "includes_ai_partner_version": "v6",
+    "includes_rolecard_opening_v1": false
+  },
+  "latest_separate": [
+    {
+      "name": "AI Partner v7",
+      "manifest": "/nfs/shared_data/ai_partner_duplex/v7/manifest.jsonl",
+      "rows": 112160,
+      "audio_hours": 475.232,
+      "wav_dependency": "/nfs/shared_data/ai_partner_duplex/v7/wav",
+      "self_contained_audio": true
+    },
+    {
+      "name": "General RP v5",
+      "manifest": "/nfs/shared_data/general_rp/v5/manifest.jsonl",
+      "rows": 51168,
+      "audio_hours": 1121.0547,
+      "wav_dependency": "/nfs/shared_data/general_rp/v3/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "CPED v5",
+      "manifest": "/nfs/shared_data/cped_duplex/v5/manifest.jsonl",
+      "rows": 7580,
+      "audio_hours": 39.5538,
+      "wav_dependency": "/nfs/shared_data/cped_duplex/v1/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "CharacterEval v5",
+      "manifest": "/nfs/shared_data/charactereval_duplex/v5/manifest.jsonl",
+      "rows": 856,
+      "audio_hours": 5.0987,
+      "wav_dependency": "/nfs/shared_data/charactereval_duplex/v1/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "Customized 0806 v6",
+      "manifest": "/nfs/shared_data/customized_duplex_0806/v6/manifest.jsonl",
+      "rows": 107100,
+      "audio_hours": 910.6444,
+      "wav_dependency": "/nfs/shared_data/customized_duplex_0806/v2/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "Customized 0811+0817 v2",
+      "manifest": "/nfs/shared_data/customized_duplex_0811_0817/v2/manifest.jsonl",
+      "rows": 1079077,
+      "audio_hours": 14212.6333,
+      "wav_dependency": "/nfs/shared_data/customized_duplex_0811_0817/v1/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "Special 0817 v2",
+      "manifest": "/nfs/shared_data/special_duplex_0817/v2/manifest.jsonl",
+      "rows": 71813,
+      "audio_hours": 292.4225,
+      "wav_dependency": "/nfs/shared_data/special_duplex_0817/v1/wav",
+      "self_contained_audio": false
+    },
+    {
+      "name": "Rolecard Opening 0818 v1",
+      "manifest": "/nfs/shared_data/rolecard_opening_duplex_0818/v1/manifest.jsonl",
+      "rows": 96536,
+      "audio_hours": 929.0108,
+      "wav_dependency": [
+        "/nfs/shared_data/rolecard_opening_duplex_0818/v1/customized/wav",
+        "/nfs/shared_data/rolecard_opening_duplex_0818/v1/special/wav"
+      ],
+      "self_contained_audio": true
+    }
+  ],
+  "optional_multimodal": [
+    {
+      "name": "Customized multimodal 0814 v1",
+      "manifest": "/nfs/shared_data/customized_duplex_multimodal_0814/v1/manifest.jsonl",
+      "rows": 24536
+    },
+    {
+      "name": "Xiaotian multimodal v2",
+      "manifest": "/nfs/shared_data/xiaotian_duplex_multimodal/v2/manifest.jsonl",
+      "rows": 1141
+    }
+  ],
+  "external_reference": [
+    {
+      "name": "QA_FD",
+      "manifest": "/nfs/shared_data/full_duplex/QA_FD_180ms_20260810/manifest.json",
+      "rows": 138239
+    },
+    {
+      "name": "GCP pass FGH",
+      "manifest": "/nfs/shared_data/full_duplex/gcp_pass_fgh_180ms_20260810/manifest.json",
+      "rows": 891809
+    },
+    {
+      "name": "Pure chat",
+      "manifest": "/nfs/shared_data/full_duplex/pure_chat_180ms_20260810/manifest.json",
+      "rows": 960929
+    }
+  ]
+}

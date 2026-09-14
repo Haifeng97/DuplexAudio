@@ -1,5 +1,10 @@
 # DuplexAudio 项目说明
 
+> 2026-09-14 交接入口：[`docs/HANDOVER_20260914.md`](docs/HANDOVER_20260914.md)。
+> 本文以下内容主要记录早期脚本式流程；新数据生产优先使用
+> `scripts/duplex_pipeline.py` 和配置驱动流程。
+
+
 这个项目用于把现有文本 SFT 数据转换成“全双工对话状态管理”训练数据。输出数据包含玩家 query 的 TTS 音频、拼接后的高斯噪声区域、以及按固定 chunk 对齐的 timeline 标签。
 
 固定控制标签及五类 timeline 的唯一规范见
