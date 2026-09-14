@@ -130,6 +130,7 @@ def prepare_rolecard_plan(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
     players = safe[-int(section["player_roles"]):]
     fixed = _fixed_roles(section)
     roles = fixed + random_roles
+    include_descriptions = bool(section.get("include_multimodal_descriptions", True))
     _write(stage / "roles.jsonl", roles)
     _write(stage / "players.jsonl", players)
     pools = _opening_pools(raw_openings, section)
@@ -179,7 +180,9 @@ def prepare_rolecard_plan(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
         opening = pools[pool][offsets[pool] % len(pools[pool])]
         offsets[pool] += 1
         variants = int(section["fixed_description_variants"])
-        if role["kind"] == "random":
+        if not include_descriptions:
+            description_id = ""
+        elif role["kind"] == "random":
             description_id = f"generated::{role_id}::v1"
         elif role["name"] == "小田" and int(stable_hash({"i": index, "seed": seed}, length=8), 16) / 0xFFFFFFFF < section["xiaotian_fixed_description_ratio"]:
             description_id = FIXED_DESCRIPTION_ID
@@ -191,7 +194,7 @@ def prepare_rolecard_plan(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
     _write(stage / "sample_plan.jsonl", plan)
 
     description_requests = []
-    for role in roles:
+    for role in roles if include_descriptions else []:
         variants = section["fixed_description_variants"] if role["kind"] == "fixed" else 1
         for variant in range(1, variants + 1):
             description_id = f"generated::{role['role_id']}::v{variant}"
@@ -291,7 +294,14 @@ def _expected_complete_mode(plan: Dict[str, Any]) -> tuple[str, str]:
     return "force_stop", "silent"
 
 
-def _dialogue_prompt(plan: Dict[str, Any], assistant: Dict[str, Any], player: Dict[str, Any], description: Dict[str, Any], max_chars: int) -> str:
+def _dialogue_prompt(
+    plan: Dict[str, Any],
+    assistant: Dict[str, Any],
+    player: Dict[str, Any],
+    description: Dict[str, Any],
+    max_chars: int,
+    include_descriptions: bool,
+) -> str:
     special = plan["special_scenario"]
     if special == "ai_intervenes_user":
         rule = (
@@ -303,9 +313,13 @@ def _dialogue_prompt(plan: Dict[str, Any], assistant: Dict[str, Any], player: Di
     elif special == "player_complete":
         completion_type, response_mode = _expected_complete_mode(plan)
         if response_mode == "acknowledge":
-            response_rule = "AI必须给出简短回复和动作"
+            response_rule = "AI必须给出简短回复" + ("和动作" if include_descriptions else "")
         else:
-            response_rule = "answer_text和action_expression都必须是空字符串"
+            response_rule = (
+                "answer_text和action_expression都必须是空字符串"
+                if include_descriptions
+                else "answer_text必须是空字符串"
+            )
         rule = (
             "最后一轮必须是玩家自然结束对话或明确要求AI停下。"
             f"最后一轮event必须逐字使用type=complete、completion_type={completion_type}、"
@@ -320,25 +334,38 @@ def _dialogue_prompt(plan: Dict[str, Any], assistant: Dict[str, Any], player: Di
         )
     else:
         opening_rule = f"第一轮玩家文本必须逐字等于给定开场：{plan['opening_query']}。"
+    response_rule = f"每轮answer_text不超过{max_chars}字符且不含动作。"
+    context = f"【AI人设】\n{assistant['persona']}\n【玩家角色卡】\n{player['persona']}\n"
+    schema = "{\"turns\":[{\"turn_id\":1,\"question_text\":\"...\",\"answer_text\":\"...\",\"event\":可选对象}]}"
+    if include_descriptions:
+        response_rule += "每个非静默回复都要有action_expression，不超过100字，只写表情、眼神、头部或上肢动作。"
+        context += (
+            f"【场景】{description['scene_description']}\n"
+            f"【声音】{description['voice_description']}\n"
+        )
+        schema = "{\"turns\":[{\"turn_id\":1,\"question_text\":\"...\",\"answer_text\":\"...\",\"action_expression\":\"...\",\"event\":可选对象}]}"
     return (
         f"只生成严格{plan['turn_count']}轮自然中文语音对话，turns数组长度必须恰好为{plan['turn_count']}，"
         f"turn_id必须从1连续编号到{plan['turn_count']}，禁止增加示例轮次。{opening_rule}{rule}\n"
-        f"每轮answer_text不超过{max_chars}字符且不含动作；每个非静默回复都要有action_expression，不超过100字，只写表情、眼神、头部或上肢动作。\n"
-        f"【AI人设】\n{assistant['persona']}\n【玩家角色卡】\n{player['persona']}\n"
-        f"【场景】{description['scene_description']}\n【声音】{description['voice_description']}\n"
+        f"{response_rule}\n{context}"
         "只输出一个合法JSON对象，不要Markdown代码块，不要解释："
-        "{\"turns\":[{\"turn_id\":1,\"question_text\":\"...\",\"answer_text\":\"...\",\"action_expression\":\"...\",\"event\":可选对象}]}"
+        f"{schema}"
     )
 
 def export_role_dialogues(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
     stage = run_dir / "00_rolecard_generation"
     roles = {row["role_id"]: row for row in iter_jsonl(stage / "roles.jsonl")}
     players = {row["role_id"]: row for row in iter_jsonl(stage / "players.jsonl")}
-    descriptions = {row["description_id"]: row for row in iter_jsonl(stage / "descriptions.jsonl")}
+    section = dict(config["rolecard_generation"])
+    include_descriptions = bool(section.get("include_multimodal_descriptions", True))
+    descriptions = (
+        {row["description_id"]: row for row in iter_jsonl(stage / "descriptions.jsonl")}
+        if include_descriptions
+        else {}
+    )
     output = stage / "dialogue_requests.jsonl"
     pilot_output = stage / "dialogue_requests_pilot.jsonl"
     rejected = stage / "dialogue_export_rejected.jsonl"
-    section = dict(config["rolecard_generation"])
     max_chars = int(section["max_answer_chars"])
     plan_path = stage / "sample_plan.jsonl"
     valid_total = sum(
@@ -346,7 +373,7 @@ def export_role_dialogues(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
         for plan in iter_jsonl(plan_path)
         if plan["assistant_role_id"] in roles
         and plan["player_role_id"] in players
-        and plan["description_id"] in descriptions
+        and (not include_descriptions or plan["description_id"] in descriptions)
     )
     pilot_count = min(valid_total, int(section.get("dialogue_pilot_samples", 500)))
     pilot_positions = {
@@ -363,8 +390,8 @@ def export_role_dialogues(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
         for plan in iter_jsonl(plan_path):
             assistant = roles.get(plan["assistant_role_id"])
             player = players.get(plan["player_role_id"])
-            description = descriptions.get(plan["description_id"])
-            if assistant is None or player is None or description is None:
+            description = descriptions.get(plan["description_id"], {})
+            if assistant is None or player is None or (include_descriptions and not description):
                 reject.write(canonical_json({"sample_id": plan["sample_id"], "reason": "missing_role_or_description", "description_id": plan["description_id"]}) + "\n")
                 counts["missing"] += 1
                 continue
@@ -372,7 +399,14 @@ def export_role_dialogues(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
                 "request_id": _request_id("role_dialogue", plan["sample_id"]),
                 "job_type": "role_dialogue",
                 "sample_id": plan["sample_id"],
-                "messages": [{"role": "user", "content": _dialogue_prompt(plan, assistant, player, description, max_chars)}],
+                "messages": [{"role": "user", "content": _dialogue_prompt(
+                    plan,
+                    assistant,
+                    player,
+                    description,
+                    max_chars,
+                    include_descriptions,
+                )}],
                 "response_text": "",
             }
             encoded = canonical_json(request) + "\n"
@@ -431,6 +465,7 @@ def _validate_turns(
     max_chars: int,
     assistant_name: str,
     player_name: str,
+    require_action: bool = True,
 ) -> List[Dict[str, Any]]:
     turns = parsed.get("turns") if isinstance(parsed, dict) else None
     if not isinstance(turns, list) or len(turns) != int(plan["turn_count"]):
@@ -456,7 +491,7 @@ def _validate_turns(
         if silent:
             answer = ""
             action = ""
-        if not question or (not silent and (not answer or not action)):
+        if not question or (not silent and (not answer or (require_action and not action))):
             raise ValueError("invalid_turn_text")
         if len(answer) > max_chars or len(action) > 160:
             raise ValueError("invalid_turn_text")
@@ -465,11 +500,12 @@ def _validate_turns(
             "source": "current" if is_current else "history",
             "question_text": question,
             "answer_text": answer,
-            "action_expression": action,
             "needs_tts": True,
             "train_answer": not silent,
             "question_speaker": player_name,
         }
+        if action:
+            turn["action_expression"] = action
         if not silent:
             turn["answer_speaker"] = assistant_name
         if event:
@@ -514,7 +550,13 @@ def apply_role_dialogues(config: Dict[str, Any], run_dir: Path, filled: Path) ->
     plans = {row["sample_id"]: row for row in iter_jsonl(stage / "sample_plan.jsonl")}
     roles = {row["role_id"]: row for row in iter_jsonl(stage / "roles.jsonl")}
     players = {row["role_id"]: row for row in iter_jsonl(stage / "players.jsonl")}
-    descriptions = {row["description_id"]: row for row in iter_jsonl(stage / "descriptions.jsonl")}
+    section = dict(config["rolecard_generation"])
+    include_descriptions = bool(section.get("include_multimodal_descriptions", True))
+    descriptions = (
+        {row["description_id"]: row for row in iter_jsonl(stage / "descriptions.jsonl")}
+        if include_descriptions
+        else {}
+    )
     custom_path, special_path = stage / "customized.jsonl", stage / "special.jsonl"
     rejected_path = stage / "dialogue_apply_rejected.jsonl"
     max_chars = int(config["rolecard_generation"]["max_answer_chars"])
@@ -528,15 +570,22 @@ def apply_role_dialogues(config: Dict[str, Any], run_dir: Path, filled: Path) ->
                     raise ValueError("unknown_sample")
                 assistant = roles[plan["assistant_role_id"]]
                 player = players[plan["player_role_id"]]
-                description = descriptions[plan["description_id"]]
+                description = descriptions.get(plan["description_id"], {})
+                if include_descriptions and not description:
+                    raise ValueError("missing_description")
                 turns = _validate_turns(
                     parse_json_response(response_text(result)),
                     plan,
                     max_chars,
                     assistant["name"],
                     player["name"],
+                    include_descriptions,
                 )
-                row = {"schema_version": "duplex_special_v1" if plan["source_kind"] == "special" else "duplex_rolecard_dialogue_v1", "id": sample_id, "scenario": plan["special_scenario"] if plan["source_kind"] == "special" else "normal_qa", "sysprompt": assistant["persona"], "turns": turns, "scene_description": description["scene_description"], "voice_description": description["voice_description"], "meta": {"dataset": "rolecard_opening_110k", "split": "train", "language": "zh", "role_name": assistant["name"], "player_name": player["name"], "turn_count": len(turns), "history_turn_count": len(turns) - 1, "assistant_role_id": assistant["role_id"], "player_role_id": player["role_id"], "opening_category": plan["opening_category"], "description_id": plan["description_id"], "query_agent": {"role_card": player["persona"], "world_view_category": player.get("world_view_category", "")}}}
+                row = {"schema_version": "duplex_special_v1" if plan["source_kind"] == "special" else "duplex_rolecard_dialogue_v1", "id": sample_id, "scenario": plan["special_scenario"] if plan["source_kind"] == "special" else "normal_qa", "sysprompt": assistant["persona"], "turns": turns, "meta": {"dataset": "rolecard_opening_generated", "split": "train", "language": "zh", "role_name": assistant["name"], "player_name": player["name"], "turn_count": len(turns), "history_turn_count": len(turns) - 1, "assistant_role_id": assistant["role_id"], "player_role_id": player["role_id"], "opening_category": plan["opening_category"], "query_agent": {"role_card": player["persona"], "world_view_category": player.get("world_view_category", "")}}}
+                if include_descriptions:
+                    row["scene_description"] = description["scene_description"]
+                    row["voice_description"] = description["voice_description"]
+                    row["meta"]["description_id"] = plan["description_id"]
                 if plan["source_kind"] == "special":
                     event = turns[-1].get("event") or {}
                     expected = "intervene" if plan["special_scenario"] == "ai_intervenes_user" else "complete"

@@ -73,6 +73,23 @@ class RolecardGenerationTests(unittest.TestCase):
         turns = _validate_turns(parsed, plan, 80, "助手", "玩家")
         self.assertEqual(turns[0]["question_text"], plan["opening_query"])
 
+    def test_standard_mode_accepts_and_omits_action_descriptions(self) -> None:
+        plan = {"turn_count": 1, "special_scenario": "", "opening_query": "今天吃什么？"}
+        parsed = {"turns": [{
+            "turn_id": 1,
+            "question_text": "今天吃什么？",
+            "answer_text": "吃火锅吧。",
+        }]}
+        turns = _validate_turns(
+            parsed,
+            plan,
+            80,
+            "助手",
+            "玩家",
+            require_action=False,
+        )
+        self.assertNotIn("action_expression", turns[0])
+
     def test_opening_semantic_change_is_rejected(self) -> None:
         plan = {"turn_count": 1, "special_scenario": "", "opening_query": "二乘以四的结果是八。"}
         parsed = {"turns": [{
