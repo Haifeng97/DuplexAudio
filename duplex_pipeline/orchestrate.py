@@ -221,6 +221,7 @@ def prepare_tts(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
         f"--max_audio_floor_sec {float(generation.get('max_audio_floor_sec', 10.0))} "
         f"--max_sec_per_char {float(generation.get('max_sec_per_char', 0.4))} "
         f"--generation_guard_sec {float(generation.get('generation_guard_sec', 5.0))} "
+        f"--max_audio_cap_ratio {float(generation.get('max_audio_cap_ratio', 0.9))} "
         f"--codec_frame_rate {float(generation.get('codec_frame_rate', 12.0))} "
         f"--max_new_tokens_cap {int(generation.get('max_new_tokens_cap', 2048))} "
         f'--monitor_every 0.5 --progress_every 50 --project "$PROJECT"'
@@ -333,7 +334,13 @@ def prepare_tts(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
     return result
 
 
-def format_outputs(config: Dict[str, Any], run_dir: Path, workers: int) -> Dict[str, Any]:
+def format_outputs(
+    config: Dict[str, Any],
+    run_dir: Path,
+    workers: int,
+    *,
+    index_root: Path | None = None,
+) -> Dict[str, Any]:
     fingerprinted = run_dir / "05_tts" / "fingerprinted"
     validation = dict(config.get("tts_validation") or {})
     validated = run_dir / "05_tts" / "validation"
@@ -346,7 +353,7 @@ def format_outputs(config: Dict[str, Any], run_dir: Path, workers: int) -> Dict[
         ("customized", "customized_index.jsonl", "customized_root", "multimodal_customized.jsonl"),
         ("special", "special_index.jsonl", "special_root", "multimodal_special.jsonl"),
     ):
-        index = (
+        index = index_root / original_index if index_root is not None else (
             validated / f"{name}_index.jsonl"
             if bool(validation.get("enabled", False))
             else fingerprinted / original_index
@@ -480,6 +487,9 @@ def _release_rebalanced(
 
 def release_balanced(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
     release = dict(config["release"])
+    duplicate_id_policy = str(release.get("duplicate_id_policy", "error"))
+    if duplicate_id_policy not in {"error", "keep_first"}:
+        raise ValueError(f"unsupported duplicate_id_policy: {duplicate_id_policy}")
     inputs = [Path(path) for path in config.get("base_manifests", [])]
     inputs.extend([
         Path(str(release["customized_root"])) / "manifest.jsonl",
@@ -499,6 +509,7 @@ def release_balanced(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
     connection = sqlite3.connect(db_path)
     connection.execute("CREATE TABLE ids (id TEXT PRIMARY KEY,source TEXT NOT NULL)")
     scenario_counts: Counter = Counter()
+    skipped_duplicate_ids: Counter = Counter()
     input_counts: Dict[str, int] = {}
     total = 0
     with output.open("w", encoding="utf-8") as handle:
@@ -512,6 +523,9 @@ def release_balanced(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
                     connection.execute("INSERT INTO ids VALUES (?,?)", (sample_id, str(path)))
                 except sqlite3.IntegrityError as exc:
                     previous = connection.execute("SELECT source FROM ids WHERE id=?", (sample_id,)).fetchone()[0]
+                    if duplicate_id_policy == "keep_first":
+                        skipped_duplicate_ids[str(path)] += 1
+                        continue
                     raise ValueError(f"duplicate id {sample_id}: {previous} and {path}") from exc
                 audio = Path(str(row.get("audio") or ""))
                 if bool(release.get("absolute_wav_paths", True)) and not audio.is_absolute():
@@ -529,6 +543,8 @@ def release_balanced(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
     result = {
         "manifest": str(output.resolve()), "rows": total,
         "inputs": input_counts, "scenario_counts": dict(scenario_counts),
+        "duplicate_id_policy": duplicate_id_policy,
+        "skipped_duplicate_ids": dict(skipped_duplicate_ids),
         "audio_paths": "absolute", "copied_base_wav": False,
     }
     atomic_write_json(out_root / "release_stats.json", result)

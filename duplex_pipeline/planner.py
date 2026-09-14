@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from .io import atomic_write_json, canonical_json, iter_jsonl, stable_hash
+from .offline_incomplete import conservative_split
 from .text import effective_char_count
 
 
@@ -81,13 +82,22 @@ def _hash_int(identifier: str, seed: int, scenario: str) -> int:
     return int(stable_hash({"id": identifier, "seed": seed, "scenario": scenario}, length=15), 16)
 
 
-def _custom_eligibility(row: Dict[str, Any], min_backchannel_answer_chars: int) -> Tuple[int, int, int]:
+def _custom_eligibility(
+    row: Dict[str, Any],
+    min_backchannel_answer_chars: int,
+    *,
+    offline_split_mode: str = "",
+    min_incomplete_chars: int = 3,
+    max_incomplete_chars: int = 14,
+) -> Tuple[int, int, int]:
     turns = [turn for turn in (row.get("turns") or []) if isinstance(turn, dict)]
     current = turns[-1] if turns else {}
     question = str(current.get("question_text") or "")
     answer = str(current.get("answer_text") or "")
     interrupt = int(len(turns) >= 2 and effective_char_count(str(turns[-2].get("answer_text") or "")) >= 2)
     incomplete = int(effective_char_count(question) >= 4)
+    if offline_split_mode == "conservative":
+        incomplete = int(conservative_split(question, min_incomplete_chars, max_incomplete_chars) is not None)
     backchannel = int(effective_char_count(answer) >= min_backchannel_answer_chars)
     return interrupt, incomplete, backchannel
 
@@ -140,8 +150,18 @@ def build_plan(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
         "CREATE TABLE custom (id TEXT PRIMARY KEY,assigned TEXT,eligible_interrupt INTEGER,eligible_incomplete INTEGER,eligible_backchannel INTEGER)"
     )
     min_backchannel = int(config.get("planning", {}).get("min_backchannel_answer_chars", 8))
+    llm = dict(config.get("llm") or {})
+    offline_split_mode = str(llm.get("offline_split_mode") or "")
+    min_incomplete_chars = int(llm.get("min_incomplete_prefix_effective_chars", 3))
+    max_incomplete_chars = int(llm.get("max_incomplete_prefix_effective_chars", 14))
     for index, row in enumerate(iter_jsonl(custom_path), start=1):
-        eligible = _custom_eligibility(row, min_backchannel)
+        eligible = _custom_eligibility(
+            row,
+            min_backchannel,
+            offline_split_mode=offline_split_mode,
+            min_incomplete_chars=min_incomplete_chars,
+            max_incomplete_chars=max_incomplete_chars,
+        )
         connection.execute("INSERT INTO custom VALUES (?,?,?,?,?)", (row["id"], None, *eligible))
         if index % 10000 == 0:
             connection.commit()

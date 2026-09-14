@@ -431,6 +431,10 @@ class SpecialScenarioPipelineTest(unittest.TestCase):
             "audio_too_long_for_text",
         )
         self.assertEqual(
+            QWEN_RUNNER.audio_quality_error(task, 9.0, **kwargs),
+            "generation_reached_duration_cap",
+        )
+        self.assertEqual(
             QWEN_RUNNER.audio_quality_error(
                 task,
                 11.9,

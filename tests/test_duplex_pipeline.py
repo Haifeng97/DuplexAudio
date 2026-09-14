@@ -3,13 +3,19 @@ from duplex_pipeline.planner import resolve_special_targets
 
 import json
 import tempfile
+import time
 import unittest
+import wave
 from pathlib import Path
+from unittest.mock import patch
 
 from duplex_pipeline.incomplete import valid_cut
+from duplex_pipeline.llm import run_requests
 from duplex_pipeline.normalize import normalize_sources
-from duplex_pipeline.orchestrate import _max_rebalanced_targets, publish_base_manifest
+from duplex_pipeline.offline_incomplete import conservative_split
+from duplex_pipeline.orchestrate import _max_rebalanced_targets, publish_base_manifest, release_balanced
 from duplex_pipeline.planner import SCENARIOS, largest_remainder, resolve_additions
+from duplex_pipeline.snapshot import snapshot_ready_indexes
 from duplex_pipeline.text import effective_char_count
 from duplex_pipeline.tts import tts_fingerprint
 
@@ -37,6 +43,14 @@ class TextTests(unittest.TestCase):
         self.assertEqual(valid_cut(text, 4, 3, 14), 4)
         self.assertIsNone(valid_cut(text, len(text), 3, 14))
         self.assertIsNone(valid_cut("一二三四五六七八九十十一十二十三十四十五后半", 15, 3, 14))
+
+    def test_conservative_offline_split_requires_hanging_prefix(self) -> None:
+        split = conservative_split("我想去仓库那边看看", 3, 14)
+        self.assertIsNotNone(split)
+        self.assertEqual(split["query_part1_text"], "我想去")
+        self.assertEqual(split["query_part2_text"], "仓库那边看看")
+        self.assertIsNone(conservative_split("好的我了解了，那就这样吧", 3, 14))
+        self.assertIsNone(conservative_split("这句话已经说完了。但是还有后半句", 3, 14))
 
 
 class PlannerTests(unittest.TestCase):
@@ -97,6 +111,37 @@ class ReleaseBalanceTests(unittest.TestCase):
             "other": 50,
         })
 
+    def test_release_can_keep_first_duplicate_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base_first = root / "base_first.jsonl"
+            base_second = root / "base_second.jsonl"
+            customized_root = root / "customized"
+            special_root = root / "special"
+            balanced_root = root / "balanced"
+            write_jsonl(base_first, [{"id": "duplicate", "audio": "/tmp/first.wav", "scenario": "normal_qa"}])
+            write_jsonl(base_second, [{"id": "duplicate", "audio": "/tmp/second.wav", "scenario": "normal_qa"}])
+            write_jsonl(customized_root / "manifest.jsonl", [{"id": "custom", "audio": "/tmp/custom.wav", "scenario": "normal_qa"}])
+            write_jsonl(special_root / "manifest.jsonl", [{"id": "special", "audio": "/tmp/special.wav", "scenario": "player_complete"}])
+            config = {
+                "base_manifests": [str(base_first), str(base_second)],
+                "release": {
+                    "customized_root": str(customized_root),
+                    "special_root": str(special_root),
+                    "balanced_root": str(balanced_root),
+                    "absolute_wav_paths": True,
+                    "duplicate_id_policy": "keep_first",
+                },
+            }
+
+            result = release_balanced(config, root / "run")
+
+            rows = [json.loads(line) for line in (balanced_root / "manifest.jsonl").read_text().splitlines()]
+            self.assertEqual([row["id"] for row in rows], ["duplicate", "custom", "special"])
+            self.assertEqual(rows[0]["audio"], "/tmp/first.wav")
+            self.assertEqual(result["rows"], 3)
+            self.assertEqual(result["skipped_duplicate_ids"], {str(base_second): 1})
+
 
 class NormalizeTests(unittest.TestCase):
     def test_namespaces_versions_and_deduplicates(self) -> None:
@@ -122,6 +167,7 @@ class NormalizeTests(unittest.TestCase):
             self.assertEqual(rows[0]["original_id"], "same")
             self.assertEqual(rows[0]["source_version"], "test")
             self.assertEqual(stats["duplicate_counts"], {"customized_test": 1})
+            self.assertTrue((root / "run" / "01_normalized" / "special.jsonl").is_file())
 
 
 class FingerprintTests(unittest.TestCase):
@@ -168,6 +214,99 @@ class SpecialPlanningTests(unittest.TestCase):
             resolve_special_targets(5474, {"ai_intervenes_user": 2734, "player_complete": 2749}),
             {"ai_intervenes_user": 2734, "player_complete": 2740},
         )
+
+
+class TimedLlmTests(unittest.TestCase):
+    def test_runtime_limit_stops_scheduling_and_keeps_completed_rows(self) -> None:
+        class FakeClient:
+            def __init__(self, config: dict) -> None:
+                pass
+
+            def complete(self, request: dict) -> str:
+                time.sleep(0.03)
+                return "{\"ok\":true}"
+
+            def close(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            requests = root / "requests.jsonl"
+            results = root / "results.jsonl"
+            write_jsonl(requests, [
+                {
+                    "request_id": f"request-{index}",
+                    "job_type": "test",
+                    "sample_id": f"sample-{index}",
+                    "messages": [{"role": "user", "content": "test"}],
+                }
+                for index in range(5)
+            ])
+            with patch("duplex_pipeline.llm.Dsv4Client", FakeClient):
+                stats = run_requests(
+                    {"dsv4": {}},
+                    requests,
+                    results,
+                    resume=False,
+                    retries=0,
+                    progress_every=0,
+                    concurrency=1,
+                    quiet=True,
+                    max_runtime_sec=0.01,
+                )
+
+            self.assertTrue(stats["timed_out"])
+            self.assertEqual(stats["processed_this_run"], 1)
+            self.assertEqual(stats["remaining"], 4)
+            self.assertEqual(len(results.read_text(encoding="utf-8").splitlines()), 1)
+
+
+class TimedSnapshotTests(unittest.TestCase):
+    def test_snapshot_keeps_only_rows_with_complete_valid_tts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            fingerprinted = run_dir / "05_tts" / "fingerprinted"
+            results_dir = run_dir / "05_tts" / "run" / "auto_results"
+            audio = run_dir / "audio.wav"
+            audio.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(audio), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(24000)
+                wav.writeframes(b"\\x00\\x00" * 28800)
+
+            ready_asset = {"task_id": "ready", "audio": str(audio), "text": "测试文本"}
+            missing_asset = {"task_id": "missing", "audio": str(audio), "text": "测试文本"}
+            write_jsonl(fingerprinted / "customized_index.jsonl", [
+                {"id": "keep", "tts_assets": {"query": ready_asset}},
+                {"id": "drop", "tts_assets": {"query": missing_asset}},
+            ])
+            write_jsonl(fingerprinted / "special_index.jsonl", [])
+            write_jsonl(results_dir / "tts_results_00.jsonl", [
+                {"id": "ready", "status": "ok", "out": str(audio)},
+            ])
+            stats = snapshot_ready_indexes(
+                {
+                    "tts": {
+                        "min_audio_sec": 1.0,
+                        "generation": {
+                            "max_audio_floor_sec": 10.0,
+                            "max_sec_per_char": 1.2,
+                        },
+                    },
+                },
+                run_dir,
+            )
+
+            self.assertEqual(stats["ready_task_ids"], 1)
+            self.assertEqual(stats["indexes"]["customized"]["counts"]["ready"], 1)
+            rows = list(
+                json.loads(line)
+                for line in (
+                    run_dir / "05_tts" / "timed_snapshot" / "customized_index.jsonl"
+                ).read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual([row["id"] for row in rows], ["keep"])
 
 
 if __name__ == "__main__":

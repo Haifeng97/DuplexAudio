@@ -123,18 +123,22 @@ def audio_quality_error(
     token_limit: int = 0,
     codec_frame_rate: float = 12.0,
     duration_guard_sec: float = 0.0,
+    max_audio_cap_ratio: float = 0.9,
 ) -> str:
     if duration_sec < min_audio_sec:
         return "audio_too_short"
     if token_limit > 0 and duration_sec >= token_limit / codec_frame_rate - 0.25:
         return "generation_reached_token_limit"
-    if duration_sec > max_audio_sec_for_task(
+    max_audio_sec = max_audio_sec_for_task(
         task,
         max_audio_floor_sec=max_audio_floor_sec,
         max_sec_per_char=max_sec_per_char,
         duration_guard_sec=duration_guard_sec,
-    ):
+    )
+    if duration_sec > max_audio_sec:
         return "audio_too_long_for_text"
+    if max_audio_cap_ratio > 0 and duration_sec >= max_audio_sec * max_audio_cap_ratio:
+        return "generation_reached_duration_cap"
     return ""
 
 
@@ -181,6 +185,7 @@ def main() -> None:
     ap.add_argument("--max_audio_floor_sec", type=float, default=10.0)
     ap.add_argument("--max_sec_per_char", type=float, default=1.2)
     ap.add_argument("--generation_guard_sec", type=float, default=5.0)
+    ap.add_argument("--max_audio_cap_ratio", type=float, default=0.9)
     ap.add_argument("--codec_frame_rate", type=float, default=12.0)
     ap.add_argument("--max_new_tokens_cap", type=int, default=DEFAULT_MAX_NEW_TOKENS_CAP)
     ap.add_argument("--shuffle_batches", action="store_true", help="Shuffle batch order after length bucketing.")
@@ -197,7 +202,8 @@ def main() -> None:
         args.max_audio_floor_sec,
         args.max_sec_per_char,
         args.codec_frame_rate,
-    ) <= 0 or args.generation_guard_sec < 0:
+        args.max_audio_cap_ratio,
+    ) <= 0 or args.generation_guard_sec < 0 or args.max_audio_cap_ratio > 1:
         ap.error("audio quality and dynamic max_new_tokens parameters are invalid")
     if args.max_new_tokens_cap <= 0:
         ap.error("--max_new_tokens_cap must be > 0")
@@ -225,6 +231,7 @@ def main() -> None:
             max_audio_floor_sec=args.max_audio_floor_sec,
             max_sec_per_char=args.max_sec_per_char,
             duration_guard_sec=args.generation_guard_sec,
+            max_audio_cap_ratio=args.max_audio_cap_ratio,
         ) if duration_sec is not None else "invalid_wav"
         if duration_sec is not None and not cache_error and not args.overwrite:
             append_jsonl(
@@ -375,6 +382,7 @@ def main() -> None:
                         token_limit=token_limit,
                         codec_frame_rate=args.codec_frame_rate,
                         duration_guard_sec=args.generation_guard_sec,
+                        max_audio_cap_ratio=args.max_audio_cap_ratio,
                     )
                     if quality_error:
                         record({
@@ -389,6 +397,7 @@ def main() -> None:
                                 max_sec_per_char=args.max_sec_per_char,
                                 duration_guard_sec=args.generation_guard_sec,
                             ),
+                            "max_audio_cap_ratio": args.max_audio_cap_ratio,
                             "batch_index": batch_index,
                             "batch_size": len(ready_tasks),
                             "max_new_tokens": token_limit,

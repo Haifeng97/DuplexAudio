@@ -4,7 +4,7 @@ import json
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -104,6 +104,7 @@ def run_requests(
     progress_every: int,
     concurrency: int,
     quiet: bool = False,
+    max_runtime_sec: float = 0.0,
 ) -> Dict[str, Any]:
     # Invoking llm-run is the explicit opt-in to the configured DSV4 endpoint.
     # Offline mode simply skips this command and fills the exported JSONL elsewhere.
@@ -120,6 +121,8 @@ def run_requests(
     pending = [row for row in requests if str(row.get("request_id") or "") not in completed]
     if concurrency <= 0:
         raise ValueError("concurrency must be > 0")
+    if max_runtime_sec < 0:
+        raise ValueError("max_runtime_sec must be >= 0")
     client = Dsv4Client(dict(config["dsv4"]))
     ok = errors = 0
     started = time.monotonic()
@@ -158,30 +161,61 @@ def run_requests(
             f"pending={len(pending)} concurrency={concurrency}",
             flush=True,
         )
+    processed = 0
+    timed_out = False
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [executor.submit(execute, request) for request in pending]
-            for index, future in enumerate(as_completed(futures), start=1):
-                result_row = future.result()
-                append_jsonl(output_path, result_row)
-                if result_row["status"] == "ok":
-                    ok += 1
-                else:
-                    errors += 1
-                elapsed = max(0.001, time.monotonic() - started)
-                total_done = len(completed) + index
-                rate = index / elapsed
-                eta = (len(pending) - index) / rate if rate > 0 else 0.0
-                if not quiet:
-                    print(
-                        f"\rLLM TOTAL: {total_done}/{len(requests)} "
-                        f"({100.0 * total_done / len(requests) if requests else 100.0:.2f}%) "
-                        f"ok={len(completed) + ok} errors={errors} rate={rate:.2f}/s eta={eta / 60:.1f}m",
-                        end="",
-                        flush=True,
-                    )
-                if progress_every > 0 and index % progress_every == 0:
-                    pass
+            pending_iter = iter(pending)
+            active: Dict[Any, Dict[str, Any]] = {}
+            exhausted = False
+            stop_submitting = False
+
+            def fill_workers() -> None:
+                nonlocal exhausted, stop_submitting, timed_out
+                while not exhausted and not stop_submitting and len(active) < concurrency:
+                    if max_runtime_sec > 0 and time.monotonic() - started >= max_runtime_sec:
+                        stop_submitting = True
+                        timed_out = True
+                        break
+                    try:
+                        request = next(pending_iter)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    active[executor.submit(execute, request)] = request
+
+            fill_workers()
+            while active:
+                if max_runtime_sec > 0 and time.monotonic() - started >= max_runtime_sec:
+                    stop_submitting = True
+                    timed_out = not exhausted
+                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in done:
+                    active.pop(future)
+                    result_row = future.result()
+                    append_jsonl(output_path, result_row)
+                    processed += 1
+                    if result_row["status"] == "ok":
+                        ok += 1
+                    else:
+                        errors += 1
+                    elapsed = max(0.001, time.monotonic() - started)
+                    total_done = len(completed) + processed
+                    rate = processed / elapsed
+                    eta = (len(pending) - processed) / rate if rate > 0 else 0.0
+                    if not quiet:
+                        print(
+                            f"\rLLM TOTAL: {total_done}/{len(requests)} "
+                            f"({100.0 * total_done / len(requests) if requests else 100.0:.2f}%) "
+                            f"ok={len(completed) + ok} errors={errors} rate={rate:.2f}/s eta={eta / 60:.1f}m",
+                            end="",
+                            flush=True,
+                        )
+                    if progress_every > 0 and processed % progress_every == 0:
+                        pass
+                fill_workers()
+            if not exhausted:
+                timed_out = True
     finally:
         if pending and not quiet:
             print(flush=True)
@@ -189,7 +223,11 @@ def run_requests(
     result = {
         "input": str(input_path), "output": str(output_path), "total": len(requests),
         "resumed": len(completed), "pending": len(pending), "ok": ok, "errors": errors,
+        "processed_this_run": processed,
+        "remaining": len(pending) - processed,
         "concurrency": concurrency,
+        "max_runtime_sec": max_runtime_sec,
+        "timed_out": timed_out,
     }
     atomic_write_json(output_path.with_suffix(output_path.suffix + ".stats.json"), result)
     return result

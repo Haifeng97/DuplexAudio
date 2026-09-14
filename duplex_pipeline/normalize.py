@@ -217,6 +217,12 @@ def normalize_sources(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
             handle.close()
         connection.close()
 
+    # Downstream planning treats absent source kinds as empty datasets.
+    for source_kind in ("customized", "special"):
+        output_path = stage_dir / f"{source_kind}.jsonl"
+        output_path.touch(exist_ok=True)
+        outputs.setdefault(source_kind, 0)
+
     if not bool(limits.get("keep_database", False)):
         db_path.unlink(missing_ok=True)
 

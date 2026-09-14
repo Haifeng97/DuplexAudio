@@ -179,6 +179,7 @@ def main() -> None:
     ap.add_argument("--max_audio_floor_sec", type=float, default=10.0)
     ap.add_argument("--max_sec_per_char", type=float, default=1.2)
     ap.add_argument("--generation_guard_sec", type=float, default=5.0)
+    ap.add_argument("--max_audio_cap_ratio", type=float, default=0.9)
     ap.add_argument("--codec_frame_rate", type=float, default=12.0)
     ap.add_argument("--max_new_tokens_cap", type=int, default=2048)
     ap.add_argument("--shuffle_batches", action="store_true", help="Shuffle length-bucketed batch order.")
@@ -189,6 +190,18 @@ def main() -> None:
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--monitor_every", type=float, default=0.5, help="Refresh aggregate progress every N seconds; 0 disables.")
+    ap.add_argument(
+        "--max_runtime_sec",
+        type=float,
+        default=0.0,
+        help="Stop workers after this many seconds and keep completed WAVs/results; 0 disables.",
+    )
+    ap.add_argument(
+        "--stop_grace_sec",
+        type=float,
+        default=30.0,
+        help="Seconds to wait after SIGTERM before killing workers at the runtime limit.",
+    )
     args = ap.parse_args()
 
     if not args.model_dir:
@@ -218,10 +231,13 @@ def main() -> None:
         args.max_audio_floor_sec,
         args.max_sec_per_char,
         args.codec_frame_rate,
-    ) <= 0 or args.generation_guard_sec < 0:
+        args.max_audio_cap_ratio,
+    ) <= 0 or args.generation_guard_sec < 0 or args.max_audio_cap_ratio > 1:
         raise SystemExit("audio quality and dynamic max_new_tokens parameters are invalid")
     if args.max_new_tokens_cap <= 0:
         raise SystemExit("--max_new_tokens_cap must be > 0")
+    if args.max_runtime_sec < 0 or args.stop_grace_sec < 0:
+        raise SystemExit("--max_runtime_sec and --stop_grace_sec must be >= 0")
     worker_count = len(gpus) * args.procs_per_gpu
 
     lines = read_nonempty_lines(tasks_path)
@@ -254,6 +270,7 @@ def main() -> None:
                 "--max_audio_floor_sec", str(args.max_audio_floor_sec),
                 "--max_sec_per_char", str(args.max_sec_per_char),
                 "--generation_guard_sec", str(args.generation_guard_sec),
+                "--max_audio_cap_ratio", str(args.max_audio_cap_ratio),
                 "--codec_frame_rate", str(args.codec_frame_rate),
                 "--max_new_tokens_cap", str(args.max_new_tokens_cap),
                 "--shuffle_seed", str(args.shuffle_seed + worker_idx),
@@ -278,6 +295,7 @@ def main() -> None:
         "max_audio_floor_sec": args.max_audio_floor_sec if args.engine == "qwen3_tts" else None,
         "max_sec_per_char": args.max_sec_per_char if args.engine == "qwen3_tts" else None,
         "generation_guard_sec": args.generation_guard_sec if args.engine == "qwen3_tts" else None,
+        "max_audio_cap_ratio": args.max_audio_cap_ratio if args.engine == "qwen3_tts" else None,
         "codec_frame_rate": args.codec_frame_rate if args.engine == "qwen3_tts" else None,
         "max_new_tokens_cap": args.max_new_tokens_cap if args.engine == "qwen3_tts" else None,
         "shuffle_batches": args.shuffle_batches if args.engine == "qwen3_tts" else None,
@@ -289,6 +307,8 @@ def main() -> None:
         ),
         "workers": worker_count,
         "project": args.project,
+        "max_runtime_sec": args.max_runtime_sec,
+        "stop_grace_sec": args.stop_grace_sec,
         "shards": [str(p) for p in shard_paths],
     }
     (work_dir / "multi_gpu_launch.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -326,18 +346,53 @@ def main() -> None:
         monitor_thread.start()
 
     failed = 0
+    timed_out = False
+    started = time.monotonic()
     try:
-        for worker_idx, proc, log_file in procs:
-            code = proc.wait()
-            log_file.close()
-            print(f"done worker={worker_idx} exit={code}", flush=True)
-            if code != 0:
-                failed += 1
+        active = {worker_idx: (proc, log_file) for worker_idx, proc, log_file in procs}
+        while active:
+            for worker_idx, (proc, log_file) in list(active.items()):
+                code = proc.poll()
+                if code is None:
+                    continue
+                log_file.close()
+                del active[worker_idx]
+                print(f"done worker={worker_idx} exit={code}", flush=True)
+                if code != 0:
+                    failed += 1
+            if not active:
+                break
+            elapsed = time.monotonic() - started
+            if args.max_runtime_sec > 0 and elapsed >= args.max_runtime_sec:
+                timed_out = True
+                print(
+                    f"runtime limit reached after {fmt_seconds(elapsed)}; "
+                    f"terminating {len(active)} workers",
+                    flush=True,
+                )
+                for proc, _ in active.values():
+                    proc.terminate()
+                grace_deadline = time.monotonic() + args.stop_grace_sec
+                for proc, _ in active.values():
+                    remaining = max(0.0, grace_deadline - time.monotonic())
+                    try:
+                        proc.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                for worker_idx, (proc, log_file) in active.items():
+                    proc.wait()
+                    log_file.close()
+                    print(f"stopped worker={worker_idx} exit={proc.returncode}", flush=True)
+                active.clear()
+                break
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("received KeyboardInterrupt; terminating workers", flush=True)
         for _, proc, log_file in procs:
-            proc.terminate()
-            log_file.close()
+            if proc.poll() is None:
+                proc.terminate()
+            if not log_file.closed:
+                log_file.close()
         raise
     finally:
         stop_event.set()
@@ -345,6 +400,17 @@ def main() -> None:
             monitor_thread.join(timeout=2.0)
         snap = progress_snapshot(shard_paths, result_dir)
         print(f"TOTAL {snap['done']}/{snap['total']} ({float(snap['pct']):.2f}%) status={snap['status']}", flush=True)
+        timed_stats = {
+            **snap,
+            "timed_out": timed_out,
+            "elapsed_sec": time.monotonic() - started,
+            "max_runtime_sec": args.max_runtime_sec,
+            "failed_workers_before_timeout": failed,
+        }
+        (work_dir / "timed_run_stats.json").write_text(
+            json.dumps(timed_stats, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     if failed:
         raise SystemExit(failed)
 

@@ -126,6 +126,7 @@
     "customized_root": "/nfs/shared_data/customized_duplex_0811_0817/v1",
     "special_root": "/nfs/shared_data/special_duplex_0817/v1",
     "balanced_root": "/nfs/shared_data/duplex_balanced_0818/v1",
+    "duplicate_id_policy": "keep_first",
     "copy_base_wav": true,
     "absolute_wav_paths": true
   }

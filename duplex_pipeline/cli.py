@@ -15,8 +15,10 @@ from .incomplete import (
 from .llm import run_requests
 from .orchestrate import format_outputs, prepare_tts, release_balanced
 from .scenarios import apply_clarification_results, materialize_scenarios
+from .snapshot import snapshot_ready_indexes
 from .tts import fingerprint_tasks
 from .normalize import normalize_sources
+from .offline_incomplete import apply_offline_splits
 from .planner import build_plan
 from .rolecard_generation import (
     apply_role_descriptions,
@@ -49,10 +51,10 @@ def run_stage(config: Dict[str, Any], name: str, function: StageFunction, *, res
 def main() -> None:
     parser = argparse.ArgumentParser(description="Config-driven full-duplex data pipeline.")
     parser.add_argument("command", choices=[
-        "normalize", "plan", "prepare", "llm-export-splits", "llm-export-rank",
+        "normalize", "plan", "prepare", "offline-apply-splits", "llm-export-splits", "llm-export-rank",
         "llm-apply-rank", "llm-export-clarification", "llm-apply-clarification",
         "llm-run", "materialize", "tts-fingerprint",
-        "tts-prepare", "format", "release",
+        "tts-prepare", "format", "release", "finalize-partial",
         "rolecard-plan", "rolecard-apply-descriptions",
         "rolecard-export-dialogues", "rolecard-apply-dialogues",
     ])
@@ -65,6 +67,7 @@ def main() -> None:
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=8, help="Concurrent DSV4 requests for llm-run.")
     parser.add_argument("--quiet", action="store_true", help="Disable live llm-run progress output.")
+    parser.add_argument("--max-runtime-sec", type=float, default=0.0, help="Stop scheduling new LLM requests after this many seconds; 0 disables.")
     parser.add_argument("--workers", type=int, default=100)
     args = parser.parse_args()
     config = load_config(Path(args.config))
@@ -89,6 +92,8 @@ def main() -> None:
         results.append(run_stage(config, "plan", build_plan, resume=args.resume))
     if args.command == "llm-export-splits":
         results.append(run_stage(config, "llm.incomplete_split.export", export_split_requests, resume=args.resume))
+    if args.command == "offline-apply-splits":
+        results.append(run_stage(config, "offline.incomplete_split.apply", apply_offline_splits, resume=args.resume))
     if args.command == "llm-export-rank":
         if not args.input:
             parser.error("llm-export-rank requires --input filled split-candidate JSONL")
@@ -110,6 +115,7 @@ def main() -> None:
             dict(config["llm"]), Path(args.input), Path(args.output),
             resume=args.resume, retries=args.retries, progress_every=args.progress_every,
             concurrency=args.concurrency, quiet=args.quiet,
+            max_runtime_sec=args.max_runtime_sec,
         ))
     if args.command == "materialize":
         results.append(run_stage(config, "materialize", materialize_scenarios, resume=args.resume))
@@ -123,6 +129,15 @@ def main() -> None:
         results.append(run_stage(config, "tts.prepare", prepare_tts, resume=args.resume))
     if args.command == "format":
         results.append(format_outputs(config, run_dir, args.workers))
+    if args.command == "finalize-partial":
+        results.append(snapshot_ready_indexes(config, run_dir))
+        results.append(format_outputs(
+            config,
+            run_dir,
+            args.workers,
+            index_root=run_dir / "05_tts" / "timed_snapshot",
+        ))
+        results.append(release_balanced(config, run_dir))
     if args.command == "release":
         results.append(release_balanced(config, run_dir))
     print(json.dumps({"command": args.command, "results": results}, ensure_ascii=False, indent=2))
