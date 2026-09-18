@@ -7,8 +7,11 @@ from typing import Any, Callable, Dict
 
 from .config import load_config
 from .incomplete import (
+    apply_direct_split_results,
+    apply_direct_validation_results,
     apply_rank_results,
     export_clarification_requests,
+    export_direct_validation_requests,
     export_rank_requests,
     export_split_requests,
 )
@@ -52,6 +55,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Config-driven full-duplex data pipeline.")
     parser.add_argument("command", choices=[
         "normalize", "plan", "prepare", "offline-apply-splits", "llm-export-splits", "llm-export-rank",
+        "llm-apply-direct-splits", "llm-export-split-validation", "llm-apply-split-validation",
         "llm-apply-rank", "llm-export-clarification", "llm-apply-clarification",
         "llm-run", "materialize", "tts-fingerprint",
         "tts-prepare", "format", "release", "finalize-partial",
@@ -94,6 +98,16 @@ def main() -> None:
         results.append(run_stage(config, "llm.incomplete_split.export", export_split_requests, resume=args.resume))
     if args.command == "offline-apply-splits":
         results.append(run_stage(config, "offline.incomplete_split.apply", apply_offline_splits, resume=args.resume))
+    if args.command == "llm-apply-direct-splits":
+        if not args.input:
+            parser.error("llm-apply-direct-splits requires --input filled direct-split JSONL")
+        results.append(apply_direct_split_results(config, run_dir, Path(args.input)))
+    if args.command == "llm-export-split-validation":
+        results.append(export_direct_validation_requests(config, run_dir))
+    if args.command == "llm-apply-split-validation":
+        if not args.input:
+            parser.error("llm-apply-split-validation requires --input filled validation JSONL")
+        results.append(apply_direct_validation_results(run_dir, Path(args.input)))
     if args.command == "llm-export-rank":
         if not args.input:
             parser.error("llm-export-rank requires --input filled split-candidate JSONL")

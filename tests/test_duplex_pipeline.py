@@ -9,7 +9,13 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from duplex_pipeline.incomplete import valid_cut
+from duplex_pipeline.incomplete import (
+    apply_direct_split_results,
+    apply_direct_validation_results,
+    export_direct_validation_requests,
+    export_split_requests,
+    valid_cut,
+)
 from duplex_pipeline.llm import run_requests
 from duplex_pipeline.normalize import normalize_sources
 from duplex_pipeline.offline_incomplete import conservative_split
@@ -51,6 +57,73 @@ class TextTests(unittest.TestCase):
         self.assertEqual(split["query_part2_text"], "仓库那边看看")
         self.assertIsNone(conservative_split("好的我了解了，那就这样吧", 3, 14))
         self.assertIsNone(conservative_split("这句话已经说完了。但是还有后半句", 3, 14))
+
+
+class DirectIncompleteTests(unittest.TestCase):
+    def test_exports_and_applies_direct_split(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            source = run_dir / "02_plan" / "customized_selected.jsonl"
+            write_jsonl(source, [
+                {**custom_row("sample-1"), "primary_scenario": "incomplete_query"},
+                {**custom_row("sample-2"), "primary_scenario": "incomplete_query_clarification"},
+            ])
+            config = {
+                "llm": {
+                    "split_strategy": "direct",
+                    "direct_batch_size": 2,
+                    "min_incomplete_prefix_effective_chars": 3,
+                    "max_incomplete_prefix_effective_chars": 14,
+                }
+            }
+
+            exported = export_split_requests(config, run_dir)
+            request = json.loads(Path(exported["output"]).read_text())
+            self.assertEqual(request["job_type"], "incomplete_direct_batch")
+            self.assertEqual(len(request["input"]["items"]), 2)
+            self.assertIn("必须覆盖每个 index", request["messages"][0]["content"])
+
+            results = run_dir / "direct_results.jsonl"
+            write_jsonl(results, [{
+                "request_id": request["request_id"],
+                "status": "ok",
+                "response_text": '[{"index":0,"cut_char_index":3},{"index":1,"cut_char_index":3}]',
+            }])
+            applied = apply_direct_split_results(config, run_dir, results)
+            selected = [json.loads(line) for line in Path(applied["output"]).read_text().splitlines()]
+            self.assertEqual([row["query_part1_text"] for row in selected], ["我想去", "我想去"])
+            self.assertEqual([row["query_part2_text"] for row in selected], ["仓库那边看看", "仓库那边看看"])
+            self.assertEqual(applied["counts"], {"selected": 2})
+
+    def test_direct_validation_drops_complete_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            unvalidated = run_dir / "03_llm" / "incomplete_rank" / "selected_splits.unvalidated.jsonl"
+            write_jsonl(unvalidated, [
+                {
+                    "sample_id": "keep", "primary_scenario": "incomplete_query",
+                    "question_text": "我想去仓库那边看看", "cut_char_index": 3,
+                    "query_part1_text": "我想去", "query_part2_text": "仓库那边看看",
+                },
+                {
+                    "sample_id": "drop", "primary_scenario": "incomplete_query",
+                    "question_text": "我已经说完了，但是还有后文", "cut_char_index": 6,
+                    "query_part1_text": "我已经说完了", "query_part2_text": "，但是还有后文",
+                },
+            ])
+            config = {"llm": {"direct_validation_batch_size": 20}}
+            exported = export_direct_validation_requests(config, run_dir)
+            request = json.loads(Path(exported["output"]).read_text())
+            results = run_dir / "validation_results.jsonl"
+            write_jsonl(results, [{
+                "request_id": request["request_id"], "status": "ok",
+                "response_text": '[{"index":0,"valid":true},{"index":1,"valid":false}]',
+            }])
+
+            applied = apply_direct_validation_results(run_dir, results)
+            kept = [json.loads(line) for line in Path(applied["output"]).read_text().splitlines()]
+            self.assertEqual([row["sample_id"] for row in kept], ["keep"])
+            self.assertEqual(applied["counts"], {"kept": 1, "rejected": 1})
 
 
 class PlannerTests(unittest.TestCase):

@@ -218,6 +218,7 @@ def prepare_tts(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
         f"--batch_size {int(tts.get('batch_size', 128))} "
         f"--dtype {shlex.quote(str(generation.get('dtype', 'bfloat16')))} "
         f"--attn_implementation {shlex.quote(str(generation.get('attn_implementation', 'flash_attention_2')))} "
+        f"--min_audio_sec {float(tts.get('min_audio_sec', 1.0))} "
         f"--max_audio_floor_sec {float(generation.get('max_audio_floor_sec', 10.0))} "
         f"--max_sec_per_char {float(generation.get('max_sec_per_char', 0.4))} "
         f"--generation_guard_sec {float(generation.get('generation_guard_sec', 5.0))} "
@@ -285,7 +286,9 @@ def prepare_tts(config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
         f"--workers 100 --sample_rate {int(fmt.get('sample_rate', 24000))} "
         f"--chunk_ms {int(fmt.get('chunk_ms', 180))} "
         f"--tokenizer_json {shlex.quote(str(fmt.get('tokenizer_json', 'tokenizers/qwen3_8b/tokenizer.json')))} "
-        f"--vad_mode {shlex.quote(str(fmt.get('vad_mode', 'silero')))}"
+        f"--vad_mode {shlex.quote(str(fmt.get('vad_mode', 'silero')))} "
+        f"--min_query_audio_sec {float(fmt.get('min_query_audio_sec', 1.0))} "
+        f"--min_backchannel_audio_sec {float(fmt.get('min_backchannel_audio_sec', 0.08))}"
     )
     lines.extend([
         "# Format to an intermediate manifest, then append action tokens and publish absolute WAV paths.",
@@ -368,6 +371,8 @@ def format_outputs(
             "--chunk_ms", str(int(fmt.get("chunk_ms", 180))),
             "--tokenizer_json", str(fmt.get("tokenizer_json", "tokenizers/qwen3_8b/tokenizer.json")),
             "--vad_mode", str(fmt.get("vad_mode", "silero")),
+            "--min_query_audio_sec", str(float(fmt.get("min_query_audio_sec", 1.0))),
+            "--min_backchannel_audio_sec", str(float(fmt.get("min_backchannel_audio_sec", 0.08))),
         ]
         _run(format_command, run_dir / "06_manifest" / f"format_{name}.log")
         final_dir = Path(str(release[root_key]))

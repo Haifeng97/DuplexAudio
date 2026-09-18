@@ -218,7 +218,9 @@ def materialize_scenarios(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
     clips = list(iter_jsonl(backchannel_path)) if backchannel_path.is_file() else []
     if not clips:
         raise FileNotFoundError("assets.backchannel_manifest must contain recorded backchannel clips")
-    seed = int(config.get("planning", {}).get("seed", 20260818))
+    planning = dict(config.get("planning") or {})
+    seed = int(planning.get("seed", 20260818))
+    drop_missing_incomplete = bool(planning.get("drop_missing_incomplete", False))
     chunk_ms = int(config.get("format", {}).get("chunk_ms", 180))
     out_dir = run_dir / "04_scenarios"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -245,6 +247,9 @@ def materialize_scenarios(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
             elif assigned == "incomplete_query":
                 split = split_map.get(str(row["id"]))
                 if split is None:
+                    if drop_missing_incomplete:
+                        counts["dropped_missing_split"] += 1
+                        continue
                     actual = "normal_qa"
                     built = normal_candidate(row, chunk_ms)
                     counts["downgraded_missing_split"] += 1
@@ -256,6 +261,9 @@ def materialize_scenarios(config: Dict[str, Any], run_dir: Path) -> Dict[str, An
                 answer = str(clarification.get("answer_text") or "")
                 action = str(clarification.get("action_expression") or "")
                 if split is None or not answer:
+                    if drop_missing_incomplete:
+                        counts["dropped_missing_clarification"] += 1
+                        continue
                     actual = "normal_qa"
                     built = normal_candidate(row, chunk_ms)
                     counts["downgraded_missing_clarification"] += 1
