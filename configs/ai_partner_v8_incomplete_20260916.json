@@ -1,0 +1,122 @@
+{
+  "run_name": "ai_partner_v8_incomplete_20260916",
+  "run_dir": "runs/ai_partner_v8_incomplete_20260916",
+  "inputs": {
+    "customized": [
+      {
+        "path": "outputs/ai_partner_v8_20260916/01_selected/incomplete_sources.jsonl",
+        "namespace": "ai_partner_v8_incomplete_20260916",
+        "source_version": "v8_20260916",
+        "kind": "customized"
+      }
+    ],
+    "special": []
+  },
+  "base_manifests": [],
+  "base_counts": {
+    "normal_qa": 0,
+    "player_interrupts_ai": 0,
+    "incomplete_query": 0,
+    "incomplete_query_clarification": 0,
+    "player_backchannel": 0,
+    "other": 0
+  },
+  "normalization": {
+    "max_question_chars": 240,
+    "max_answer_chars": 360,
+    "keep_database": false
+  },
+  "ratios": {
+    "normal_qa": 0.0,
+    "player_interrupts_ai": 0.0,
+    "incomplete_query": 0.8,
+    "incomplete_query_clarification": 0.2,
+    "player_backchannel": 0.0,
+    "other": 0.0
+  },
+  "planning": {
+    "seed": 20260916,
+    "min_backchannel_answer_chars": 8,
+    "mix_secondary_scenarios": false,
+    "drop_missing_incomplete": true
+  },
+  "assets": {
+    "backchannel_manifest": "outputs/roleplay_zh_v3/backchannel_corpus/backchannels.jsonl"
+  },
+  "format": {
+    "chunk_ms": 180,
+    "sample_rate": 24000,
+    "tokenizer_json": "tokenizers/qwen3_8b/tokenizer.json",
+    "vad_mode": "silero",
+    "min_query_audio_sec": 0.1,
+    "min_backchannel_audio_sec": 0.08
+  },
+  "llm": {
+    "backend": "dsv4",
+    "min_incomplete_prefix_effective_chars": 3,
+    "max_incomplete_prefix_effective_chars": 14,
+    "candidate_count": 5,
+    "clarification_wait_sec_min": 3.0,
+    "clarification_wait_sec_max": 5.0,
+    "dsv4": {
+      "base_url": "https://nlp.guangzi.qq.com/api11/openapi",
+      "model": "cgame_aimate_generater_1",
+      "api_key_env": "DSV4_API_KEY",
+      "wsid_env": "DSV4_WSID",
+      "timeout_sec": 300,
+      "max_tokens": 8192,
+      "temperature": 0,
+      "top_p": 1,
+      "top_k": 20,
+      "repetition_penalty": 1.0,
+      "thinking": false,
+      "openai_infer": true
+    },
+    "split_strategy": "direct",
+    "direct_batch_size": 5,
+    "direct_validation_enabled": true,
+    "direct_validation_batch_size": 20
+  },
+  "tts": {
+    "engine": "qwen3_tts",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "model_version": "Qwen3-TTS-12Hz-1.7B-Base",
+    "language": "Chinese",
+    "sample_rate": 24000,
+    "batch_size": 64,
+    "shuffle_batches": true,
+    "shuffle_seed": 20260916,
+    "min_audio_sec": 0.1,
+    "generation": {
+      "dtype": "bfloat16",
+      "attn_implementation": "flash_attention_2",
+      "generation_guard_sec": 5.0,
+      "max_audio_floor_sec": 10.0,
+      "max_sec_per_char": 0.4,
+      "codec_frame_rate": 12.0,
+      "max_new_tokens_cap": 2048,
+      "max_audio_cap_ratio": 0.9
+    }
+  },
+  "tts_validation": {
+    "enabled": false
+  },
+  "tts_tasks": {
+    "voice_bank": "outputs/esd_voice_bank_zh_neutral60/voice_bank.jsonl",
+    "voice_strategy": "sample_hash",
+    "voice_seed": 20260916,
+    "max_voice_refs": 0,
+    "max_ref_text_chars": 16,
+    "min_ref_snr": 0.0,
+    "tts_text_punct": true
+  },
+  "release": {
+    "customized_root": "outputs/ai_partner_v8_20260916/delta/customized",
+    "special_root": "outputs/ai_partner_v8_20260916/delta/special",
+    "balanced_root": "outputs/ai_partner_v8_20260916/delta/all",
+    "copy_base_wav": false,
+    "absolute_wav_paths": true,
+    "rebalance_after_filter": false,
+    "rebalance_seed": 20260916
+  }
+}
